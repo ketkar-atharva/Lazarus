@@ -25,7 +25,7 @@ export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
           <ShieldAlert className="w-5 h-5" />
         </div>
         <div>
-          <h1 className="sidebar-logo-title">Project Lazarus</h1>
+          <h1 className="sidebar-logo-title">Lazarus</h1>
           <p className="sidebar-logo-subtitle">API Ghost Defence</p>
         </div>
       </div>

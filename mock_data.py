@@ -1,4 +1,4 @@
-# mock_data.py — Project Lazarus: Zombie API Discovery & Defence Platform
+# mock_data.py — Lazarus: Zombie API Discovery & Defence Platform
 
 from datetime import datetime
 

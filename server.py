@@ -12,7 +12,7 @@ from mock_data import (
 import database as db
 from email_notifier import send_decommission_email
 
-app = FastAPI(title="Project Lazarus — Zombie API Discovery & Defence")
+app = FastAPI(title="Lazarus — Zombie API Discovery & Defence")
 
 app.add_middleware(
     CORSMiddleware,
@@ -238,7 +238,7 @@ def db_status():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🔒 Project Lazarus — Zombie API Discovery & Defence")
+    print("\n🔒 Lazarus — Zombie API Discovery & Defence")
     print(f"   MongoDB: {'✅ Connected' if db.is_connected() else '❌ Not connected'}")
     print(f"   Persisted decommissions: {len(db.get_all_decommissions())}")
     print(f"   Persisted honeypots: {len(db.get_all_honeypots())}")

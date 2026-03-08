@@ -147,7 +147,7 @@ export default function App() {
     return (
       <div className="app-loading">
         <div className="loading-spinner" />
-        <p className="loading-title">Project Lazarus</p>
+        <p className="loading-title">Lazarus</p>
         <p className="loading-subtitle">Initializing API scanner...</p>
       </div>
     );

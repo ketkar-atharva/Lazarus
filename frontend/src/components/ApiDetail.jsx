@@ -127,7 +127,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
       const res = await axios.post(`${API_BASE}/api/decommission`, {
         api_id: detail.id,
         path: detail.path,
-        reason: 'Security risk — decommissioned via Project Lazarus platform.',
+        reason: 'Security risk — decommissioned via Lazarus platform.',
       });
       setDecommissionResult(res.data);
       setDecommissioned(true);

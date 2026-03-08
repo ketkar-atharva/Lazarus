@@ -1,10 +1,10 @@
 """
-Email notification module for Project Lazarus.
+Email notification module for Lazarus.
 Sends decommission report emails to stakeholders via Gmail SMTP.
 
 SETUP:
   1. Go to https://myaccount.google.com/apppasswords
-  2. Generate an App Password for "Project Lazarus"
+  2. Generate an App Password for "Lazarus"
   3. Paste the 16-char password below in GMAIL_APP_PASSWORD
 """
 
@@ -15,7 +15,7 @@ from datetime import datetime
 
 # ── Gmail Configuration ──
 GMAIL_ADDRESS = "daxketkar10@gmail.com"
-GMAIL_APP_PASSWORD = "tntkxvytibcrutuu"  # App Password for Project Lazarus
+GMAIL_APP_PASSWORD = "tntkxvytibcrutuu"  # App Password for Lazarus
 RECIPIENT = "daxketkar10@gmail.com"
 
 SMTP_HOST = "smtp.gmail.com"
@@ -64,7 +64,7 @@ def send_decommission_email(decommission_data: dict) -> dict:
     html_body = f"""
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width:640px; margin:0 auto; background:#f8fafc; padding:24px;">
         <div style="background:#1e293b; color:white; padding:20px 24px; border-radius:12px 12px 0 0;">
-            <h1 style="margin:0; font-size:18px;">🔒 Project Lazarus — API Decommission Report</h1>
+            <h1 style="margin:0; font-size:18px;">🔒 Lazarus — API Decommission Report</h1>
             <p style="margin:4px 0 0; font-size:12px; color:#94a3b8;">Zombie API Discovery & Defence Platform</p>
         </div>
 
@@ -159,7 +159,7 @@ def send_decommission_email(decommission_data: dict) -> dict:
 
         <div style="background:#f1f5f9; padding:16px 24px; border-radius:0 0 12px 12px; border:1px solid #e2e8f0; border-top:none; text-align:center;">
             <p style="margin:0; font-size:11px; color:#94a3b8;">
-                This is an automated report from Project Lazarus — Zombie API Discovery & Defence Platform<br>
+                This is an automated report from Lazarus — Zombie API Discovery & Defence Platform<br>
                 Generated at {datetime.utcnow().isoformat()}Z
             </p>
         </div>
@@ -167,7 +167,7 @@ def send_decommission_email(decommission_data: dict) -> dict:
     """
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🔒 [Project Lazarus] API Decommissioned: {path}"
+    msg["Subject"] = f"🔒 [Lazarus] API Decommissioned: {path}"
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = RECIPIENT
     msg.attach(MIMEText(html_body, "html"))

@@ -95,12 +95,12 @@ export default function DashboardHome({ catalog, traffic, analysis, onViewApi, o
             <ShieldAlert className="w-4 h-4" />
             <span>Zombie API Discovery & Defence</span>
           </div>
-          <h1 className="hero-title">Project Lazarus</h1>
+          <h1 className="hero-title">Lazarus</h1>
           <p className="hero-description">
-            An automated platform that continuously scans the bank's network infrastructure, API gateways, 
-            and deployment environments to discover <strong>undocumented</strong>, <strong>shadow</strong>, 
-            and <strong>zombie APIs</strong>. It classifies each API's security posture, provides 
-            actionable recommendations, and supports automated decommissioning workflows with 
+            An automated platform that continuously scans the bank's network infrastructure, API gateways,
+            and deployment environments to discover <strong>undocumented</strong>, <strong>shadow</strong>,
+            and <strong>zombie APIs</strong>. It classifies each API's security posture, provides
+            actionable recommendations, and supports automated decommissioning workflows with
             full audit trails for <strong>RBI & PCI-DSS compliance</strong>.
           </p>
           <div className="hero-actions">
