@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import DashboardHome from './components/DashboardHome';
 import Dashboard from './components/Dashboard';
 import ApiDetail from './components/ApiDetail';
 import Monitoring from './components/Monitoring';
 import Reports from './components/Reports';
+import AiChat from './components/AiChat';
+import AiInsights from './components/AiInsights';
 import './App.css';
 
 const API_BASE = 'http://localhost:8000';
@@ -17,6 +19,7 @@ const PAGE_LABELS = {
   monitoring: 'Monitoring',
   reports: 'Reports',
   detail: 'API Detail',
+  ai: 'AI Assistant',
 };
 
 export default function App() {
@@ -28,6 +31,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [deployedPaths, setDeployedPaths] = useState(new Set());
   const [selectedApi, setSelectedApi] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   /* ── Navigation History ── */
   const [history, setHistory] = useState([{ page: 'dashboard', api: null }]);
@@ -179,6 +183,8 @@ export default function App() {
         return <Monitoring />;
       case 'reports':
         return <Reports />;
+      case 'ai':
+        return <AiInsights onOpenChat={() => setChatOpen(true)} />;
       case 'inventory':
         return (
           <Dashboard
@@ -200,6 +206,7 @@ export default function App() {
             onViewApi={handleViewApi}
             onNavigate={navigateTo}
             deployedPaths={deployedPaths}
+            onOpenChat={() => setChatOpen(true)}
           />
         );
     }
@@ -253,6 +260,23 @@ export default function App() {
 
         {renderPage()}
       </main>
+
+      {/* Floating AI Chat Toggle Button */}
+      <button
+        className="ai-chat-fab"
+        onClick={() => setChatOpen(true)}
+        title="Open AI Assistant"
+        id="ai-chat-fab"
+      >
+        <Sparkles className="w-5 h-5" />
+      </button>
+
+      {/* Floating AI Chat Panel */}
+      <AiChat
+        isOpen={chatOpen}
+        onClose={() => setChatOpen(false)}
+        apiContext={selectedApi}
+      />
     </div>
   );
 }

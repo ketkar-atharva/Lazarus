@@ -23,6 +23,8 @@ import {
   FileText,
   RefreshCw,
   ArrowUpRight,
+  Sparkles,
+  Brain,
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -45,7 +47,7 @@ const AnimatedNumber = ({ value, duration = 1000 }) => {
   return <span>{display.toLocaleString()}</span>;
 };
 
-export default function DashboardHome({ catalog, traffic, analysis, onViewApi, onNavigate, deployedPaths }) {
+export default function DashboardHome({ catalog, traffic, analysis, onViewApi, onNavigate, deployedPaths, onOpenChat }) {
   const [dbStatus, setDbStatus] = useState(null);
   const [decommissionCount, setDecommissionCount] = useState(0);
   const [activityLog, setActivityLog] = useState([]);
@@ -302,6 +304,32 @@ export default function DashboardHome({ catalog, traffic, analysis, onViewApi, o
                   <div className="threat-bar-fill" style={{ width: `${totalApis ? (decommissionCount / totalApis) * 100 : 0}%`, background: '#16a34a' }} />
                 </div>
                 <span className="threat-bar-count" style={{ color: '#16a34a' }}>{decommissionCount}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* AI Security Insights Widget */}
+          <div className="detail-card ai-dashboard-widget">
+            <div className="card-header">
+              <div className="card-header-left">
+                <Sparkles className="w-5 h-5 text-purple-500" />
+                <h3 className="card-title">AI Security Insights</h3>
+              </div>
+              <span className="ai-powered-badge">
+                <Sparkles className="w-3 h-3" /> AI
+              </span>
+            </div>
+            <div className="ai-widget-body">
+              <p className="ai-widget-desc">
+                Get AI-powered security analysis, plain-English risk explanations, and automated compliance reports for your entire API landscape.
+              </p>
+              <div className="ai-widget-actions">
+                <button className="ai-widget-btn primary" onClick={() => onNavigate('ai')}>
+                  <Brain className="w-4 h-4" /> AI Insights
+                </button>
+                <button className="ai-widget-btn secondary" onClick={onOpenChat}>
+                  <Sparkles className="w-4 h-4" /> Ask AI
+                </button>
               </div>
             </div>
           </div>

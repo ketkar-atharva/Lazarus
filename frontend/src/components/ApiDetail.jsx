@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
 import {
   ArrowLeft,
   ShieldAlert,
@@ -28,6 +29,10 @@ import {
   Globe,
   Mail,
   RefreshCw,
+  Brain,
+  Swords,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -97,6 +102,12 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
   const [decommissioning, setDecommissioning] = useState(false);
   const [decommissioned, setDecommissioned] = useState(false);
   const [decommissionResult, setDecommissionResult] = useState(null);
+  const [aiExplanation, setAiExplanation] = useState(null);
+  const [aiExplanationLoading, setAiExplanationLoading] = useState(false);
+  const [attackSimulation, setAttackSimulation] = useState(null);
+  const [attackSimLoading, setAttackSimLoading] = useState(false);
+  const [aiReport, setAiReport] = useState(null);
+  const [aiReportLoading, setAiReportLoading] = useState(false);
 
   useState(() => {
     (async () => {
@@ -379,6 +390,162 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
               </div>
             </div>
           )}
+
+          {/* AI Risk Explanation */}
+          <div className="detail-card ai-feature-card">
+            <div className="card-header">
+              <div className="card-header-left">
+                <Brain className="w-5 h-5 text-purple-500" />
+                <h3 className="card-title">AI Risk Explanation</h3>
+              </div>
+              <span className="ai-powered-badge">
+                <Sparkles className="w-3 h-3" /> AI Powered
+              </span>
+            </div>
+            <div className="ai-feature-body">
+              {aiExplanationLoading ? (
+                <div className="ai-inline-loading">
+                  <Loader2 className="w-5 h-5 animate-spin text-purple-500" />
+                  <p>Analyzing security risks in plain English...</p>
+                </div>
+              ) : aiExplanation ? (
+                <div className="ai-rendered-content">
+                  <ReactMarkdown>{aiExplanation}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="ai-feature-cta">
+                  <p className="ai-feature-desc">
+                    Get a plain-English explanation of this API's security risks, tailored for non-technical staff.
+                  </p>
+                  <button
+                    className="ai-feature-btn"
+                    onClick={async () => {
+                      setAiExplanationLoading(true);
+                      try {
+                        const res = await axios.post(`${API_BASE}/api/ai/explain-risk`, {
+                          api_id: detail.id,
+                          path: detail.path,
+                        });
+                        setAiExplanation(res.data.explanation);
+                      } catch (err) {
+                        setAiExplanation('⚠ Failed to generate explanation. Ensure GEMINI_API_KEY is set.');
+                      } finally {
+                        setAiExplanationLoading(false);
+                      }
+                    }}
+                    id="btn-ai-explain"
+                  >
+                    <Brain className="w-4 h-4" />
+                    Explain This Risk
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Attack Scenario Simulator */}
+          <div className="detail-card ai-feature-card">
+            <div className="card-header">
+              <div className="card-header-left">
+                <Swords className="w-5 h-5 text-red-500" />
+                <h3 className="card-title">Attack Scenario Simulator</h3>
+              </div>
+              <span className="ai-powered-badge">
+                <Sparkles className="w-3 h-3" /> AI Powered
+              </span>
+            </div>
+            <div className="ai-feature-body">
+              {attackSimLoading ? (
+                <div className="ai-inline-loading">
+                  <Loader2 className="w-5 h-5 animate-spin text-red-500" />
+                  <p>Simulating attack scenarios...</p>
+                </div>
+              ) : attackSimulation ? (
+                <div className="ai-rendered-content">
+                  <ReactMarkdown>{attackSimulation}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="ai-feature-cta">
+                  <p className="ai-feature-desc">
+                    See step-by-step how a threat actor could exploit the vulnerabilities found in this API.
+                  </p>
+                  <button
+                    className="ai-feature-btn attack"
+                    onClick={async () => {
+                      setAttackSimLoading(true);
+                      try {
+                        const res = await axios.post(`${API_BASE}/api/ai/attack-simulation`, {
+                          api_id: detail.id,
+                          path: detail.path,
+                        });
+                        setAttackSimulation(res.data.simulation);
+                      } catch (err) {
+                        setAttackSimulation('⚠ Failed to simulate attacks. Ensure GEMINI_API_KEY is set.');
+                      } finally {
+                        setAttackSimLoading(false);
+                      }
+                    }}
+                    id="btn-ai-attack"
+                  >
+                    <Swords className="w-4 h-4" />
+                    Simulate Attack Scenarios
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* AI Security Report */}
+          <div className="detail-card ai-feature-card">
+            <div className="card-header">
+              <div className="card-header-left">
+                <FileWarning className="w-5 h-5 text-blue-500" />
+                <h3 className="card-title">AI Security Report</h3>
+              </div>
+              <span className="ai-powered-badge">
+                <Sparkles className="w-3 h-3" /> AI Powered
+              </span>
+            </div>
+            <div className="ai-feature-body">
+              {aiReportLoading ? (
+                <div className="ai-inline-loading">
+                  <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                  <p>Generating compliance report...</p>
+                </div>
+              ) : aiReport ? (
+                <div className="ai-rendered-content">
+                  <ReactMarkdown>{aiReport}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="ai-feature-cta">
+                  <p className="ai-feature-desc">
+                    Generate a comprehensive AI-enriched security & compliance report for this API.
+                  </p>
+                  <button
+                    className="ai-feature-btn report"
+                    onClick={async () => {
+                      setAiReportLoading(true);
+                      try {
+                        const res = await axios.post(`${API_BASE}/api/ai/generate-report`, {
+                          api_id: detail.id,
+                          path: detail.path,
+                        });
+                        setAiReport(res.data.report);
+                      } catch (err) {
+                        setAiReport('⚠ Failed to generate report. Ensure GEMINI_API_KEY is set.');
+                      } finally {
+                        setAiReportLoading(false);
+                      }
+                    }}
+                    id="btn-ai-report"
+                  >
+                    <FileWarning className="w-4 h-4" />
+                    Generate AI Report
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Decommission Workflow */}
           {(detail.status === 'ZOMBIE' || detail.status === 'STALE' || detail.status === 'SHADOW') && (

@@ -7,6 +7,7 @@ import {
   Search,
   Bell,
   ChevronRight,
+  Sparkles,
 } from 'lucide-react';
 
 const navItems = [
@@ -14,6 +15,7 @@ const navItems = [
   { id: 'inventory', label: 'API Inventory', icon: Server },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
   { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'ai', label: 'AI Assistant', icon: Sparkles },
 ];
 
 export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
@@ -50,6 +52,9 @@ export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
               )}
               {item.id === 'monitoring' && (
                 <span className="sidebar-badge green">Live</span>
+              )}
+              {item.id === 'ai' && (
+                <span className="sidebar-badge ai-badge">AI</span>
               )}
             </button>
           );

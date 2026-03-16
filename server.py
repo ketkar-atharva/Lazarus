@@ -11,6 +11,16 @@ from mock_data import (
 )
 import database as db
 from email_notifier import send_decommission_email
+import ai_engine
+
+# Load .env for GEMINI_API_KEY
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    import os
+    ai_engine.API_KEY = os.environ.get("GEMINI_API_KEY", ai_engine.API_KEY)
+except ImportError:
+    pass
 
 app = FastAPI(title="Lazarus — Zombie API Discovery & Defence")
 
@@ -236,11 +246,122 @@ def db_status():
     return {"connected": db.is_connected(), "uri": "mongodb://127.0.0.1:27017/lazarus"}
 
 
+# ── AI Interpretation Layer Endpoints ──
+
+class AiApiRequest(BaseModel):
+    api_id: str | None = None
+    path: str | None = None
+
+
+class AiQueryRequest(BaseModel):
+    question: str
+
+
+def _gather_all_api_details():
+    """Gather full detail for every known API (catalog + shadow)."""
+    all_details = []
+    for api in EXPECTED_CATALOG:
+        detail = get_api_detail(api_id=api["id"])
+        if detail:
+            all_details.append(detail)
+    # Shadow APIs from traffic
+    catalog_paths = {api["path"] for api in EXPECTED_CATALOG}
+    for flow in LIVE_TRAFFIC_FLOW:
+        if flow["path"] not in catalog_paths:
+            detail = get_api_detail(path=flow["path"])
+            if detail:
+                all_details.append(detail)
+    return all_details
+
+
+@app.post("/api/ai/explain-risk")
+def ai_explain_risk(req: AiApiRequest):
+    """AI Risk Explanation — plain-English risk translation for non-technical users."""
+    if not req.api_id and not req.path:
+        raise HTTPException(status_code=400, detail="Provide api_id or path.")
+    try:
+        detail = get_api_detail(api_id=req.api_id, path=req.path)
+        if not detail:
+            raise HTTPException(status_code=404, detail="API not found.")
+        result = ai_engine.explain_risk(detail)
+        return {"api_path": detail.get("path"), "explanation": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
+
+
+@app.post("/api/ai/query")
+def ai_query(req: AiQueryRequest):
+    """Natural Language Security Query — ask questions in plain English."""
+    if not req.question or not req.question.strip():
+        raise HTTPException(status_code=400, detail="Provide a question.")
+    try:
+        all_details = _gather_all_api_details()
+        analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+        result = ai_engine.query_security(req.question, all_details, analysis)
+        return {"question": req.question, "answer": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
+
+
+@app.post("/api/ai/generate-report")
+def ai_generate_report(req: AiApiRequest):
+    """AI Security Report Generator — comprehensive compliance report."""
+    if not req.api_id and not req.path:
+        raise HTTPException(status_code=400, detail="Provide api_id or path.")
+    try:
+        detail = get_api_detail(api_id=req.api_id, path=req.path)
+        if not detail:
+            raise HTTPException(status_code=404, detail="API not found.")
+        result = ai_engine.generate_report(detail)
+        return {"api_path": detail.get("path"), "report": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
+
+
+@app.post("/api/ai/attack-simulation")
+def ai_attack_simulation(req: AiApiRequest):
+    """Attack Scenario Simulator — hypothetical attack vectors."""
+    if not req.api_id and not req.path:
+        raise HTTPException(status_code=400, detail="Provide api_id or path.")
+    try:
+        detail = get_api_detail(api_id=req.api_id, path=req.path)
+        if not detail:
+            raise HTTPException(status_code=404, detail="API not found.")
+        result = ai_engine.simulate_attack(detail)
+        return {"api_path": detail.get("path"), "simulation": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
+
+
+@app.get("/api/ai/security-summary")
+def ai_security_summary():
+    """AI Security Summary — executive overview for dashboard."""
+    try:
+        all_details = _gather_all_api_details()
+        analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+        result = ai_engine.security_summary(all_details, analysis)
+        return {"summary": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     print("\n🔒 Lazarus — Zombie API Discovery & Defence")
     print(f"   MongoDB: {'✅ Connected' if db.is_connected() else '❌ Not connected'}")
     print(f"   Persisted decommissions: {len(db.get_all_decommissions())}")
     print(f"   Persisted honeypots: {len(db.get_all_honeypots())}")
+    print(f"   AI Engine: {'✅ API Key Set' if ai_engine.API_KEY else '⚠ No GEMINI_API_KEY'}")
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
