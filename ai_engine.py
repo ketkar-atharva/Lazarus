@@ -1,13 +1,8 @@
 """
 AI Interpretation Layer for Lazarus — Zombie API Discovery & Defence.
 
-Uses Google Gemini (gemini-2.0-flash-lite) to power:
-  1. AI Risk Explanation Engine
-  2. Natural Language Security Queries
-  3. Automated Security Report Generator
-  4. Attack Scenario Simulator
-
-Set your API key via environment variable GEMINI_API_KEY or in a .env file.
+Optimized version with MINIMAL token usage to avoid quota limits.
+Uses compact text summaries instead of full JSON dumps.
 """
 
 import os
@@ -15,352 +10,355 @@ import json
 import time
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
-# import google.generativeai as genai
+
 from dotenv import load_dotenv
 from google import genai
 
-
-# Load .env FIRST before anything else
+# ── Load .env before reading any env vars ──────────────────────────────────────
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=_ENV_PATH, override=True)
 
-# NOW it's safe to read env vars
+# ── EXPOSE API_KEY at module level for server.py ───────────────────────────────
+API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+# ── Use gemini-1.5-flash for better stability and quota ────────────────────────
 _MODEL = "gemini-1.5-flash"
+
 _client = None
 _last_api_key = None
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+# ── Lazy client factory ────────────────────────────────────────────────────────
 def _get_client():
     global _client, _last_api_key
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("GEMINI_API_KEY", API_KEY).strip()
     if not api_key:
         raise RuntimeError(
-            "GEMINI_API_KEY not set. Export it as an environment variable or add to .env"
+            "GEMINI_API_KEY not set. Export it as an environment variable or add it to .env"
         )
-
     if _client is None or api_key != _last_api_key:
         _client = genai.Client(api_key=api_key)
         _last_api_key = api_key
     return _client
 
 
-def _extract_text_from_response(response):
-    """Extract a human-readable text string from a Gemini GenerateContentResponse."""
-    # Primary path: client.models.generate_content() returns GenerateContentResponse
-    # whose .text property concatenates all text parts automatically.
+# ── Response text extractor ────────────────────────────────────────────────────
+def _extract_text_from_response(response) -> str:
+    """Safely pull plain text out of any Gemini response shape."""
     text = getattr(response, "text", None)
     if text:
         return text
 
-    # Fallback: iterate candidates → content → parts manually
-    candidates = getattr(response, "candidates", None)
-    if candidates:
-        parts = []
-        for candidate in candidates:
-            content = getattr(candidate, "content", None)
-            if content:
-                for part in getattr(content, "parts", []):
-                    part_text = getattr(part, "text", None)
-                    if part_text:
-                        parts.append(part_text)
-        if parts:
-            return "\n\n".join(parts)
+    for candidate in getattr(response, "candidates", []):
+        content = getattr(candidate, "content", None)
+        if content:
+            parts = [
+                p.text for p in getattr(content, "parts", [])
+                if getattr(p, "text", None)
+            ]
+            if parts:
+                return "\n\n".join(parts)
 
-    # Last-resort: str representation
     return str(response)
 
 
-def _call_with_retry(prompt, max_retries=3):
-    """Call Gemini with automatic retry on quota/rate-limit errors."""
+# ── Token estimation helper ────────────────────────────────────────────────────
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (1 token ≈ 4 characters)"""
+    return len(text) // 4
+
+
+# ── Retry wrapper with token limit check ───────────────────────────────────────
+def _call_with_retry(prompt: str, max_retries: int = 3) -> str:
+    """
+    Call Gemini with exponential back-off on quota / rate-limit errors.
+    Includes token limit safety check.
+    """
+    # Check token count before sending
+    estimated_tokens = _estimate_tokens(prompt)
+    print(f"🔍 Sending ~{estimated_tokens:,} tokens to Gemini")
+    
+    if estimated_tokens > 25000:
+        raise ValueError(
+            f"Prompt too large ({estimated_tokens:,} tokens). "
+            f"Maximum is 25,000 tokens. Reduce the data being sent."
+        )
+    
     for attempt in range(max_retries):
         try:
             client = _get_client()
-            response = client.models.generate_content(model=_MODEL, contents=prompt)
+            response = client.models.generate_content(
+                model=_MODEL,
+                contents=prompt,
+            )
             return _extract_text_from_response(response)
-        except Exception as e:
-            err_str = str(e).lower()
-            if any(kw in err_str for kw in ["quota", "rate", "429", "resource_exhausted"]):
-                if attempt < max_retries - 1:
-                    wait = (2 ** attempt) * 2  # 2s, 4s, 8s
-                    time.sleep(wait)
-                    continue
+
+        except Exception as exc:
+            err = str(exc).lower()
+            is_rate_limit = any(k in err for k in ("quota", "rate", "429", "resource_exhausted"))
+
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = (2 ** attempt) * 2
+                print(f"⏳ Rate limited. Waiting {wait}s before retry {attempt + 2}/{max_retries}...")
+                time.sleep(wait)
+                continue
+
+            if is_rate_limit:
                 raise RuntimeError(
                     "The AI service is temporarily busy (rate limit reached). "
                     "Please wait a minute and try again."
-                )
+                ) from exc
+
             raise
 
 
-def _safe_json(data):
-    """Convert data to JSON string, handling non-serializable types."""
-    def default(o):
-        return str(o)
-    return json.dumps(data, indent=2, default=default)
+# ── Helper: Create compact API summary ─────────────────────────────────────────
+def _create_compact_api_summary(api_detail: dict) -> str:
+    """Convert full API detail to compact text summary (saves 90% tokens)"""
+    posture = api_detail.get("security_posture", {})
+    findings = posture.get("findings", [])
+    
+    critical_findings = [f for f in findings if f.get("severity") == "critical"]
+    high_findings = [f for f in findings if f.get("severity") == "high"]
+    
+    summary = f"""
+API: {api_detail.get('path', 'Unknown')}
+Method: {api_detail.get('method', 'Unknown')}
+Status: {api_detail.get('status', 'Unknown')}
+Overall Security Score: {posture.get('overall_score', 'N/A')}/100
+
+Security Findings:
+- Critical Issues: {len(critical_findings)}
+- High Risk Issues: {len(high_findings)}
+- Total Findings: {len(findings)}
+
+Authentication: {posture.get('authentication', {}).get('status', 'Unknown')}
+Encryption: {posture.get('encryption', {}).get('status', 'Unknown')}
+Rate Limiting: {posture.get('rate_limiting', {}).get('status', 'Unknown')}
+
+Top Issues:
+"""
+    
+    # Add top 3 most critical findings
+    top_findings = sorted(findings, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.get("severity", "low"), 4))[:3]
+    for i, finding in enumerate(top_findings, 1):
+        summary += f"{i}. [{finding.get('severity', 'Unknown').upper()}] {finding.get('finding', 'No details')}\n"
+    
+    return summary.strip()
 
 
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # 1. AI RISK EXPLANATION ENGINE
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def explain_risk(api_detail: dict) -> str:
     """
     Translate complex API security findings into clear, business-friendly
     risk explanations for non-technical banking employees.
     """
+    # Create compact summary instead of full JSON
+    api_summary = _create_compact_api_summary(api_detail)
+    
+    prompt = f"""You are a senior cybersecurity advisor at a commercial bank.
+Explain these API security findings to non-technical banking employees in simple terms.
 
+{api_summary}
 
-    system_prompt = """You are a senior cybersecurity advisor working inside a commercial bank. 
-Your audience is non-technical banking employees — branch managers, compliance officers, 
-and operations staff who do NOT understand technical jargon.
+Provide:
+1. What is this API? (1 sentence)
+2. What's wrong? (plain English, no jargon)
+3. Why should we care? (business impact: money, reputation, compliance)
+4. Risk Level: 🔴 Critical / 🟡 Warning / 🟢 Safe
+5. What should we do? (simple next steps)
 
-Your job is to take raw API security scan data and explain:
-1. **What is this API?** — One sentence, plain English.
-2. **What's wrong?** — Explain each security finding like you're talking to a colleague over coffee. No jargon.
-3. **Why should I care? (Business Impact)** — Translate each risk into real bank consequences: 
-   financial loss, regulatory fines, customer data breach, reputation damage.
-4. **Risk Level** — Give a simple traffic-light rating: 🔴 Critical, 🟡 Warning, 🟢 Safe.
-5. **What should we do?** — Simple, actionable next steps a non-technical person can understand.
-
-RULES:
-- Never use words like "endpoint", "vector", "payload", "injection", "TLS", "OAuth" without explaining them.
-- Use analogies from banking (e.g., "This is like leaving the vault door unlocked overnight").
-- Keep it concise — aim for 200-400 words.
-- Use markdown formatting with headers, bullet points, and bold text.
-- Always start with a one-line summary."""
-
-    prompt = f"""{system_prompt}
-
-Here is the raw API security scan data to explain:
-
-```json
-{_safe_json(api_detail)}
-```
-
-Generate the risk explanation now."""
+Keep it under 300 words. Use banking analogies. Format in markdown."""
 
     return _call_with_retry(prompt)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # 2. NATURAL LANGUAGE SECURITY QUERIES
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def query_security(question: str, all_apis: list, analysis: dict) -> str:
     """
-    Answer natural-language security questions by searching the
-    security findings database using Gemini as the reasoning engine.
+    Answer natural-language security questions by reasoning over the
+    API security data.
     """
+    # Create compact summary of ALL APIs
+    total_apis = len(all_apis)
+    critical_apis = [a for a in all_apis if a.get("security_posture", {}).get("overall_score", 100) < 30]
+    high_risk_apis = [a for a in all_apis if 30 <= a.get("security_posture", {}).get("overall_score", 100) < 60]
+    
+    shadow_count = len(analysis.get("shadow_apis", []))
+    zombie_count = len(analysis.get("zombie_apis", []))
+    
+    # Build compact text summary
+    data_summary = f"""
+SECURITY OVERVIEW:
+- Total APIs: {total_apis}
+- Critical Risk (score < 30): {len(critical_apis)} APIs
+- High Risk (score 30-60): {len(high_risk_apis)} APIs
+- Shadow APIs (undocumented): {shadow_count}
+- Zombie APIs (deprecated but active): {zombie_count}
 
+CRITICAL APIS:"""
+    
+    for api in critical_apis[:5]:  # Only top 5
+        posture = api.get("security_posture", {})
+        data_summary += f"""
+  • {api.get('path')} - Score: {posture.get('overall_score')}/100
+    Issues: {len([f for f in posture.get('findings', []) if f.get('severity') == 'critical'])} critical"""
+    
+    data_summary += f"""
 
-    system_prompt = """You are the AI assistant for "Lazarus", a bank's API security platform.
-The user is a non-technical banking employee asking questions about their API security posture.
+SHADOW APIS:"""
+    for shadow in analysis.get("shadow_apis", [])[:3]:  # Only top 3
+        data_summary += f"\n  • {shadow.get('path')} ({shadow.get('method')})"
+    
+    prompt = f"""You are the AI assistant for a bank's API security platform.
+Answer this question using ONLY the data below.
 
-You have access to the complete API security database provided below. Use ONLY this data to answer.
+{data_summary}
 
-RULES:
-- Answer in clear, non-technical language suitable for banking staff.
-- Always reference specific API names/paths when relevant.
-- If the data doesn't contain enough information to answer, say so honestly.
-- Use markdown formatting with headers, bullet points, and bold text for readability.
-- Keep answers focused and concise (150-300 words).
-- If the user asks about something outside the security data, politely redirect to security topics.
-- Include specific numbers, scores, and details from the data to support your answer.
-- End with a brief recommendation or next step when applicable."""
+QUESTION: {question}
 
-    prompt = f"""{system_prompt}
-
-═══ COMPLETE API SECURITY DATABASE ═══
-
-API Details & Security Postures:
-```json
-{_safe_json(all_apis)}
-```
-
-Threat Analysis Summary:
-```json
-{_safe_json(analysis)}
-```
-
-═══ USER QUESTION ═══
-{question}
-
-Answer the question using only the data above."""
+Answer in clear, non-technical language for banking staff. 
+Include specific API names/paths and numbers.
+Keep it under 250 words. Format in markdown."""
 
     return _call_with_retry(prompt)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # 3. AUTOMATED SECURITY REPORT GENERATOR
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def generate_report(api_detail: dict) -> str:
     """
-    Generate a comprehensive security & compliance report for an API,
-    enriched with AI risk assessments and recommendations.
+    Generate a comprehensive security & compliance report for an API.
     """
+    api_summary = _create_compact_api_summary(api_detail)
+    
+    prompt = f"""You are a cybersecurity compliance officer at a major Indian bank regulated by RBI and PCI-DSS.
 
+Generate a formal API Security & Compliance Report for:
 
-    system_prompt = """You are a cybersecurity compliance officer at a major Indian commercial bank 
-regulated by RBI (Reserve Bank of India) and subject to PCI-DSS v4.0 requirements.
+{api_summary}
 
-Generate a formal, comprehensive API Security & Compliance Report. The report should be 
-professional enough to present to:
-- The CISO (Chief Information Security Officer)
-- The bank's compliance department
-- External RBI auditors
-
-REPORT STRUCTURE:
+Include:
 # 🔒 API Security & Compliance Report
 
 ## Executive Summary
-One paragraph summarizing the API, its risk level, and key findings.
-
-## API Overview
-Table with: Name, Path, Method, Version, Owner, Status, Last Updated.
+One paragraph with risk level and key findings.
 
 ## Security Assessment
-For each security dimension (Authentication, Encryption, Rate Limiting, Data Exposure, Input Validation):
-- Current status (Pass/Warning/Fail)
-- Finding details
+For each dimension (Authentication, Encryption, Rate Limiting):
+- Status and findings
 - Risk rating
 - Compliance impact
 
 ## Risk Analysis
-- Overall risk score and level
-- Business impact assessment
-- Potential financial exposure estimate
-- Regulatory non-compliance risks
-
-## Compliance Mapping
-Map findings to specific regulatory requirements:
-- RBI IT Framework 2023
-- PCI-DSS v4.0 requirements
-- Data Protection guidelines
+- Overall score and level
+- Business impact
+- Regulatory risks (RBI IT Framework, PCI-DSS v4.0)
 
 ## Remediation Roadmap
-Prioritized list of actions with timeline suggestions:
-- Immediate (within 24 hours)
-- Short-term (within 1 week)
-- Medium-term (within 1 month)
+- Immediate (24 hours)
+- Short-term (1 week)
+- Medium-term (1 month)
 
 ## Conclusion
-Final assessment and sign-off recommendation.
+Final assessment and recommendation.
 
-RULES:
-- Use professional, formal language suitable for regulatory documentation.
-- Include specific data points and scores from the scan.
-- Use markdown formatting with tables, headers, and structured lists.
-- Aim for 500-800 words."""
-
-    prompt = f"""{system_prompt}
-
-Here is the raw API security scan data:
-
-```json
-{_safe_json(api_detail)}
-```
-
-Generate the complete report now."""
+Professional tone suitable for CISO and auditors. 500-700 words. Use markdown."""
 
     return _call_with_retry(prompt)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # 4. ATTACK SCENARIO SIMULATOR
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def simulate_attack(api_detail: dict) -> str:
     """
-    Generate hypothetical attack scenarios showing how a threat actor
-    could exploit the discovered API vulnerabilities step-by-step.
+    Generate hypothetical attack scenarios showing how threat actors
+    could exploit the discovered vulnerabilities.
     """
+    api_summary = _create_compact_api_summary(api_detail)
+    
+    prompt = f"""You are a red-team security specialist conducting threat assessment for a bank.
 
+Generate 2 realistic attack scenarios based on ACTUAL vulnerabilities found:
 
-    system_prompt = """You are a red-team security specialist conducting a simulated threat assessment 
-for a bank's API security team. Your job is to show — in educational terms — how real-world 
-attackers could exploit the vulnerabilities found in the scan data.
+{api_summary}
 
-Generate 2-3 realistic attack scenarios based on the ACTUAL vulnerabilities found.
-
-FORMAT FOR EACH SCENARIO:
+For each scenario include:
 ## ⚔ Attack Scenario [N]: [Attack Name]
-
-**Threat Actor Profile:** [Who would do this — e.g., external hacker, insider threat, script kiddie]
-**Difficulty Level:** [Easy / Moderate / Advanced]
-**Potential Impact:** [What they could achieve]
+**Threat Actor:** [Type]
+**Difficulty:** [Easy/Moderate/Advanced]
+**Impact:** [What they achieve]
 
 ### Attack Steps:
-1. **[Step Name]** — [Detailed description of what the attacker does]
-2. **[Step Name]** — [Next step in the attack chain]
-3. ... continue until objective is achieved
+1. [Step] — [Description]
+2. [Step] — [Description]
+(continue until objective achieved)
 
-### Evidence from Scan Data:
-- [Quote specific findings that make this attack possible]
+### Evidence from Scan:
+- [Specific findings that enable this]
 
-### Real-World Parallel:
-- [Reference a similar real attack or breach, if applicable]
-
-### How to Prevent This:
+### Prevention:
 - [Specific countermeasures]
 
-RULES:
-- Only generate scenarios based on ACTUAL vulnerabilities found in the scan data. Do NOT invent vulnerabilities.
-- Explain in language understandable to non-technical banking staff.
-- Use analogies from physical security when helpful (e.g., "This is like finding a back door 
-  with no lock — anyone who finds it can walk in").
-- Be educational, not instructional — show what COULD happen, not how to do it.
-- Use markdown formatting with clear headers and numbered steps.
-- Aim for 400-600 words total across all scenarios."""
-
-    prompt = f"""{system_prompt}
-
-Here is the API security scan data to analyze:
-
-```json
-{_safe_json(api_detail)}
-```
-
-Generate the attack scenarios now."""
+Educational tone for banking staff. Use banking security analogies.
+400-600 words total. Markdown format."""
 
     return _call_with_retry(prompt)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 5. AI SECURITY SUMMARY (for Dashboard)
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. AI SECURITY SUMMARY (Dashboard)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def security_summary(all_apis: list, analysis: dict) -> str:
     """
-    Generate a brief executive summary of the overall API security posture
+    Generate a brief executive summary of overall API security posture
     for the dashboard home page.
     """
+    # Ultra-compact summary
+    total_apis = len(all_apis)
+    critical_count = len([a for a in all_apis if a.get("security_posture", {}).get("overall_score", 100) < 30])
+    high_count = len([a for a in all_apis if 30 <= a.get("security_posture", {}).get("overall_score", 100) < 60])
+    shadow_count = len(analysis.get("shadow_apis", []))
+    zombie_count = len(analysis.get("zombie_apis", []))
+    
+    # Get the worst API
+    worst_api = None
+    if all_apis:
+        worst_api = min(all_apis, key=lambda x: x.get("security_posture", {}).get("overall_score", 100))
+    
+    data_summary = f"""
+Total APIs: {total_apis}
+Critical Risk APIs: {critical_count}
+High Risk APIs: {high_count}
+Shadow APIs: {shadow_count}
+Zombie APIs: {zombie_count}
 
+Worst API: {worst_api.get('path') if worst_api else 'N/A'} (Score: {worst_api.get('security_posture', {}).get('overall_score') if worst_api else 'N/A'}/100)
+"""
+    
+    prompt = f"""You are the AI security advisor for a bank's API security platform called Lazarus.
 
-    system_prompt = """You are the AI security advisor for a bank's API security platform called Lazarus.
-Generate a brief executive summary (3-5 sentences) of the bank's overall API security posture 
-based on the scan data. Written for a non-technical banking manager.
+Generate a brief executive summary (3-5 sentences) for a banking manager:
+
+{data_summary}
 
 Include:
-- Total number of APIs and their status breakdown
-- The most critical risk that needs attention RIGHT NOW
-- One positive highlight (something that's working well)
-- A one-line recommendation
+- Total APIs and status breakdown
+- Most critical risk needing attention NOW
+- One positive highlight
+- One-line recommendation
 
-Keep it warm and professional. Use emoji sparingly. Format in markdown."""
-
-    prompt = f"""{system_prompt}
-
-API Security Data:
-```json
-{_safe_json(all_apis)}
-```
-
-Threat Analysis:
-```json
-{_safe_json(analysis)}
-```
-
-Generate the summary now."""
+Warm, professional tone. Use markdown."""
 
     return _call_with_retry(prompt)

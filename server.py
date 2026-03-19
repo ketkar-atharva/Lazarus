@@ -11,16 +11,17 @@ from mock_data import (
 )
 import database as db
 from email_notifier import send_decommission_email
-import ai_engine
 
-# Load .env for GEMINI_API_KEY
+# Load .env BEFORE importing ai_engine
 try:
     from dotenv import load_dotenv
-    load_dotenv()
     import os
-    ai_engine.API_KEY = os.environ.get("GEMINI_API_KEY", ai_engine.API_KEY)
+    load_dotenv()
 except ImportError:
     pass
+
+# Import ai_engine after loading .env
+import ai_engine
 
 app = FastAPI(title="Lazarus — Zombie API Discovery & Defence")
 
@@ -283,10 +284,14 @@ def ai_explain_risk(req: AiApiRequest):
         detail = get_api_detail(api_id=req.api_id, path=req.path)
         if not detail:
             raise HTTPException(status_code=404, detail="API not found.")
+        
+        print(f"🤖 AI explaining risk for: {detail.get('path')}")
         result = ai_engine.explain_risk(detail)
         return {"api_path": detail.get("path"), "explanation": result}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
 
@@ -297,12 +302,15 @@ def ai_query(req: AiQueryRequest):
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Provide a question.")
     try:
+        print(f"🤖 AI answering: {req.question}")
         all_details = _gather_all_api_details()
         analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
         result = ai_engine.query_security(req.question, all_details, analysis)
         return {"question": req.question, "answer": result}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
 
@@ -316,10 +324,14 @@ def ai_generate_report(req: AiApiRequest):
         detail = get_api_detail(api_id=req.api_id, path=req.path)
         if not detail:
             raise HTTPException(status_code=404, detail="API not found.")
+        
+        print(f"🤖 AI generating report for: {detail.get('path')}")
         result = ai_engine.generate_report(detail)
         return {"api_path": detail.get("path"), "report": result}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
 
@@ -333,10 +345,14 @@ def ai_attack_simulation(req: AiApiRequest):
         detail = get_api_detail(api_id=req.api_id, path=req.path)
         if not detail:
             raise HTTPException(status_code=404, detail="API not found.")
+        
+        print(f"🤖 AI simulating attacks for: {detail.get('path')}")
         result = ai_engine.simulate_attack(detail)
         return {"api_path": detail.get("path"), "simulation": result}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
 
@@ -345,12 +361,15 @@ def ai_attack_simulation(req: AiApiRequest):
 def ai_security_summary():
     """AI Security Summary — executive overview for dashboard."""
     try:
+        print(f"🤖 AI generating security summary")
         all_details = _gather_all_api_details()
         analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
         result = ai_engine.security_summary(all_details, analysis)
         return {"summary": result}
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI engine error: {e}")
 
@@ -361,7 +380,11 @@ if __name__ == "__main__":
     print(f"   MongoDB: {'✅ Connected' if db.is_connected() else '❌ Not connected'}")
     print(f"   Persisted decommissions: {len(db.get_all_decommissions())}")
     print(f"   Persisted honeypots: {len(db.get_all_honeypots())}")
-    print(f"   AI Engine: {'✅ API Key Set' if ai_engine.API_KEY else '⚠ No GEMINI_API_KEY'}")
+    
+    # Check AI Engine status
+    has_api_key = hasattr(ai_engine, 'API_KEY') and bool(ai_engine.API_KEY)
+    print(f"   AI Engine: {'✅ API Key Set' if has_api_key else '⚠ No GEMINI_API_KEY'}")
+    if has_api_key:
+        print(f"   AI Model: {ai_engine._MODEL}")
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
