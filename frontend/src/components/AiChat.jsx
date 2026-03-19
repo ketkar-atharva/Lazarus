@@ -69,7 +69,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
       const res = await axios.post(`${API_BASE}/api/ai/query`, { question });
       addAiMessage(res.data.answer);
     } catch (err) {
-      const detail = err.response?.data?.detail || 'Failed to get AI response. Make sure GEMINI_API_KEY is set.';
+      const detail = err.response?.data?.detail || 'Failed to get AI response. Ensure the backend is running.';
       addAiMessage(`⚠ **Error:** ${detail}`);
     } finally {
       setLoading(false);
@@ -166,8 +166,8 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="ai-chat-title">Lazarus AI</h3>
-              <p className="ai-chat-subtitle">Security Intelligence Assistant</p>
+              <h3 className="ai-chat-title">Lazarus AI Assistant</h3>
+              <p className="ai-chat-subtitle">Local Engine • Offline Ready</p>
             </div>
           </div>
           <button className="ai-chat-close" onClick={onClose} id="ai-chat-close">

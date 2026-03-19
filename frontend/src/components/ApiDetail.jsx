@@ -428,7 +428,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                         });
                         setAiExplanation(res.data.explanation);
                       } catch (err) {
-                        setAiExplanation('⚠ Failed to generate explanation. Ensure GEMINI_API_KEY is set.');
+                        setAiExplanation('⚠ Failed to generate explanation. Ensure the backend is running.');
                       } finally {
                         setAiExplanationLoading(false);
                       }
@@ -480,7 +480,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                         });
                         setAttackSimulation(res.data.simulation);
                       } catch (err) {
-                        setAttackSimulation('⚠ Failed to simulate attacks. Ensure GEMINI_API_KEY is set.');
+                        setAttackSimulation('⚠ Failed to simulate attacks. Ensure the backend is running.');
                       } finally {
                         setAttackSimLoading(false);
                       }
@@ -532,7 +532,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                         });
                         setAiReport(res.data.report);
                       } catch (err) {
-                        setAiReport('⚠ Failed to generate report. Ensure GEMINI_API_KEY is set.');
+                        setAiReport('⚠ Failed to generate report. Ensure the backend is running.');
                       } finally {
                         setAiReportLoading(false);
                       }

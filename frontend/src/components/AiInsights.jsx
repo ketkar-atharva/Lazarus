@@ -42,7 +42,7 @@ export default function AiInsights({ onOpenChat }) {
         const res = await axios.get(`${API_BASE}/api/ai/security-summary`);
         setSummary(res.data.summary);
       } catch (err) {
-        setSummary('⚠ Could not generate AI summary. Ensure the backend is running and GEMINI_API_KEY is set.');
+        setSummary('⚠ Could not generate AI summary. Ensure the backend is running on port 8000.');
       } finally {
         setSummaryLoading(false);
       }
@@ -80,9 +80,9 @@ export default function AiInsights({ onOpenChat }) {
           <h2 className="page-title">AI Security Insights</h2>
           <p className="page-subtitle">AI-powered analysis and intelligence for your API landscape</p>
         </div>
-        <div className="header-live-badge" style={{ background: '#f5f3ff', borderColor: '#ddd6fe', color: '#7c3aed' }}>
+        <div className="header-live-badge" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', color: '#16a34a' }}>
           <Sparkles className="w-4 h-4" />
-          <span>Powered by Gemini AI</span>
+          <span>Local AI Engine</span>
         </div>
       </div>
 
