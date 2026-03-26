@@ -17,6 +17,7 @@ import {
   Eye,
   BarChart3,
   ArrowRight,
+  Shuffle,
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -25,13 +26,18 @@ export default function Reports() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedLog, setSelectedLog] = useState(null);
+  const [redirectRules, setRedirectRules] = useState([]);
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await axios.get(`${API_BASE}/api/decommission-log`);
-        setLogs(res.data);
-        if (res.data.length > 0) setSelectedLog(res.data[0]);
+        const [logRes, rrRes] = await Promise.all([
+          axios.get(`${API_BASE}/api/decommission-log`),
+          axios.get(`${API_BASE}/api/redirect-rules`).catch(() => ({ data: [] })),
+        ]);
+        setLogs(logRes.data);
+        if (logRes.data.length > 0) setSelectedLog(logRes.data[0]);
+        setRedirectRules(rrRes.data || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -87,19 +93,35 @@ export default function Reports() {
         </div>
       </div>
 
+      {/* Active Redirect Rules section removed as requested */}
+
       {/* Report Selector (if multiple) */}
       {logs.length > 1 && (
         <div className="report-selector">
-          {logs.map((l, i) => (
-            <button
-              key={i}
-              className={`report-selector-item ${selectedLog === l ? 'active' : ''}`}
-              onClick={() => setSelectedLog(l)}
-            >
-              <span className="report-selector-path">{l.path}</span>
-              <span className="report-selector-date">{new Date(l.initiated_at || l.timestamp).toLocaleDateString()}</span>
-            </button>
-          ))}
+          {logs.map((l, i) => {
+            const hasRedirect = redirectRules.some(r => r.old_path === l.path);
+            const rr = redirectRules.find(r => r.old_path === l.path);
+            return (
+              <button
+                key={i}
+                className={`report-selector-item ${selectedLog === l ? 'active' : ''}`}
+                onClick={() => setSelectedLog(l)}
+              >
+                <span className="report-selector-path">{l.path}</span>
+                {hasRedirect && (
+                  <span style={{
+                    fontSize: '0.72rem', fontWeight: 600,
+                    color: '#16a34a', background: '#f0fdf4',
+                    border: '1px solid #bbf7d0', borderRadius: 99,
+                    padding: '1px 8px', whiteSpace: 'nowrap',
+                  }}>
+                    &#x2192; {rr?.new_path}
+                  </span>
+                )}
+                <span className="report-selector-date">{new Date(l.initiated_at || l.timestamp).toLocaleDateString()}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

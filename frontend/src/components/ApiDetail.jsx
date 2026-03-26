@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -108,28 +108,39 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
   const [attackSimLoading, setAttackSimLoading] = useState(false);
   const [aiReport, setAiReport] = useState(null);
   const [aiReportLoading, setAiReportLoading] = useState(false);
+  const [redirectTo, setRedirectTo] = useState('');
 
-  useState(() => {
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setDetail(null);
+    setError(null);
+    setDecommissioned(false);
+    setDecommissionResult(null);
     (async () => {
       try {
         const params = apiId && !apiId.startsWith('SHADOW-')
           ? { api_id: apiId }
           : { path: apiPath };
         const res = await axios.get(`${API_BASE}/api/detail`, { params });
+        if (cancelled) return;
         setDetail(res.data);
-        // Check if already decommissioned (persisted in MongoDB)
+        // Restore decommissioned state persisted in MongoDB
         if (res.data.is_decommissioned && res.data.decommission_record) {
           setDecommissioned(true);
           setDecommissionResult(res.data.decommission_record);
         }
       } catch (err) {
-        setError('Failed to load API details.');
-        console.error(err);
+        if (!cancelled) {
+          setError('Failed to load API details.');
+          console.error(err);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  });
+    return () => { cancelled = true; };
+  }, [apiId, apiPath]);
 
   const handleDecommission = async () => {
     if (!detail) return;
@@ -139,6 +150,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
         api_id: detail.id,
         path: detail.path,
         reason: 'Security risk — decommissioned via Lazarus platform.',
+        redirect_to: redirectTo.trim(),
       });
       setDecommissionResult(res.data);
       setDecommissioned(true);
@@ -578,11 +590,39 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                       </div>
                     ))}
                   </div>
+                  {/* Optional redirect field */}
+                  <div style={{ marginTop: 16 }}>
+                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: 6 }}>
+                      Redirect Traffic To <span style={{ fontWeight: 400, color: '#94a3b8' }}>(optional — new safe endpoint path)</span>
+                    </label>
+                    <input
+                      type="text"
+                      id="decommission-redirect-to"
+                      placeholder="/api/v3/endpoint"
+                      value={redirectTo}
+                      onChange={e => setRedirectTo(e.target.value)}
+                      disabled={decommissioning}
+                      style={{
+                        width: '100%',
+                        padding: '9px 13px',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 8,
+                        fontSize: '0.875rem',
+                        fontFamily: 'monospace',
+                        background: '#f8fafc',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                    <p style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: 4 }}>
+                      If provided, all traffic to this zombie endpoint will be automatically redirected to your safe replacement.
+                    </p>
+                  </div>
                   <button
                     className="btn-decommission"
                     onClick={handleDecommission}
                     disabled={decommissioning}
                     id="btn-decommission"
+                    style={{ marginTop: 16 }}
                   >
                     {decommissioning ? (
                       <><RefreshCw className="w-4 h-4 animate-spin" /> Executing Workflow...</>
@@ -593,79 +633,102 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                 </>
               ) : (
                 <div className="decom-success">
-                  <CheckCircle2 className="w-8 h-8 text-green-500" />
-                  <h4>Decommission Complete</h4>
-                  <p>All steps executed successfully at {decommissionResult?.initiated_at ? new Date(decommissionResult.initiated_at).toLocaleString() : 'now'}.</p>
-
-                  {/* Audit Trail */}
-                  <div className="decom-audit-section">
-                    <p className="decom-section-title">Execution Audit Trail</p>
-                    <div className="decom-steps-done">
-                      {decommissionResult?.steps_completed?.map((step, i) => (
-                        <div key={i} className="decom-step-done">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                          <div className="decom-step-info">
-                            <span className="decom-step-action">{step.action || step}</span>
-                            {step.detail && <span className="decom-step-detail">{step.detail}</span>}
-                          </div>
-                        </div>
-                      ))}
+                  {/* Success Header */}
+                  <div className="decom-success-header">
+                    <CheckCircle2 style={{ width: 28, height: 28, color: '#16a34a', flexShrink: 0, marginTop: 2 }} />
+                    <div className="decom-success-title">
+                      <h4>Decommission Complete</h4>
+                      <p>All steps executed successfully at {decommissionResult?.initiated_at ? new Date(decommissionResult.initiated_at).toLocaleString() : 'now'}.</p>
                     </div>
                   </div>
 
-                  {/* Post Verification */}
-                  {decommissionResult?.post_verification && (
-                    <div className="decom-audit-section">
-                      <p className="decom-section-title">Post-Decommission Verification</p>
-                      <div className="decom-verify-grid">
-                        <div className="decom-verify-item pass">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                          <span>Endpoint: {decommissionResult.post_verification.endpoint_status}</span>
-                        </div>
-                        <div className="decom-verify-item pass">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                          <span>DNS: {decommissionResult.post_verification.dns_resolved ? 'Still active ⚠' : 'Removed ✓'}</span>
-                        </div>
-                        <div className="decom-verify-item pass">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                          <span>Tokens revoked: {(decommissionResult.post_verification.tokens_revoked || 0).toLocaleString()}</span>
-                        </div>
-                        <div className="decom-verify-item pass">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                          <span>Gateway rule: {decommissionResult.post_verification.gateway_rule_active ? 'Active ✓' : 'Inactive ⚠'}</span>
+                  <div className="decom-success-body">
+                    {/* Redirect Badge */}
+                    {(decommissionResult?.redirect_to || redirectTo.trim()) && (
+                      <div className="decom-success-section">
+                        <p className="decom-section-label">Traffic Redirect</p>
+                        <div style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 6,
+                          background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#16a34a',
+                          borderRadius: 99, padding: '5px 14px', fontWeight: 600,
+                          fontSize: '0.82rem',
+                        }}>
+                          <CheckCircle2 style={{ width: 14, height: 14 }} />
+                          Traffic Redirected → {decommissionResult?.redirect_to || redirectTo.trim()}
                         </div>
                       </div>
-                      <div className="decom-verify-result">
-                        <Shield className="w-4 h-4" />
-                        <span>{decommissionResult.post_verification.result}</span>
-                      </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Compliance Summary */}
-                  {decommissionResult?.compliance_summary && (
-                    <div className="decom-audit-section">
-                      <p className="decom-section-title">Compliance Summary</p>
-                      <div className="decom-compliance-rows">
-                        <div className="decom-compliance-row">
-                          <span className="dcr-label">Regulation</span>
-                          <span className="dcr-value">{decommissionResult.compliance_summary.regulation}</span>
-                        </div>
-                        <div className="decom-compliance-row">
-                          <span className="dcr-label">Risk Before</span>
-                          <span className="dcr-value dcr-red">{decommissionResult.compliance_summary.risk_before}</span>
-                        </div>
-                        <div className="decom-compliance-row">
-                          <span className="dcr-label">Risk After</span>
-                          <span className="dcr-value dcr-green">{decommissionResult.compliance_summary.risk_after}</span>
-                        </div>
-                        <div className="decom-compliance-row">
-                          <span className="dcr-label">Audit Ready</span>
-                          <span className="dcr-value dcr-green">{decommissionResult.compliance_summary.audit_ready ? '✓ Yes' : '✗ No'}</span>
-                        </div>
+                    {/* Audit Trail */}
+                    <div className="decom-success-section">
+                      <p className="decom-section-label">Execution Audit Trail</p>
+                      <div className="decom-steps-done">
+                        {decommissionResult?.steps_completed?.map((step, i) => (
+                          <div key={i} className="decom-step-done">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                            <div className="decom-step-info">
+                              <span className="decom-step-action">{step.action || step}</span>
+                              {step.detail && <span className="decom-step-detail">{step.detail}</span>}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  )}
+
+                    {/* Post Verification */}
+                    {decommissionResult?.post_verification && (
+                      <div className="decom-success-section">
+                        <p className="decom-section-label">Post-Decommission Verification</p>
+                        <div className="decom-verify-grid">
+                          <div className="decom-verify-item pass">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                            <span>Endpoint: {decommissionResult.post_verification.endpoint_status}</span>
+                          </div>
+                          <div className="decom-verify-item pass">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                            <span>DNS: {decommissionResult.post_verification.dns_resolved ? 'Still active ⚠' : 'Removed ✓'}</span>
+                          </div>
+                          <div className="decom-verify-item pass">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                            <span>Tokens revoked: {(decommissionResult.post_verification.tokens_revoked || 0).toLocaleString()}</span>
+                          </div>
+                          <div className="decom-verify-item pass">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                            <span>Gateway rule: {decommissionResult.post_verification.gateway_rule_active ? 'Active ✓' : 'Inactive ⚠'}</span>
+                          </div>
+                        </div>
+                        <div className="decom-verify-result" style={{ marginTop: 10 }}>
+                          <Shield className="w-4 h-4" />
+                          <span>{decommissionResult.post_verification.result}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Compliance Summary */}
+                    {decommissionResult?.compliance_summary && (
+                      <div className="decom-success-section">
+                        <p className="decom-section-label">Compliance Summary</p>
+                        <div className="decom-compliance-rows">
+                          <div className="decom-compliance-row">
+                            <span className="dcr-label">Regulation</span>
+                            <span className="dcr-value">{decommissionResult.compliance_summary.regulation}</span>
+                          </div>
+                          <div className="decom-compliance-row">
+                            <span className="dcr-label">Risk Before</span>
+                            <span className="dcr-value dcr-red">{decommissionResult.compliance_summary.risk_before}</span>
+                          </div>
+                          <div className="decom-compliance-row">
+                            <span className="dcr-label">Risk After</span>
+                            <span className="dcr-value dcr-green">{decommissionResult.compliance_summary.risk_after}</span>
+                          </div>
+                          <div className="decom-compliance-row">
+                            <span className="dcr-label">Audit Ready</span>
+                            <span className="dcr-value dcr-green">{decommissionResult.compliance_summary.audit_ready ? '✓ Yes' : '✗ No'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   <p className="decom-report-hint">→ View the full audit report in the <strong>Reports</strong> page in the sidebar.</p>
                 </div>

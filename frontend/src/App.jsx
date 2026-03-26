@@ -9,6 +9,7 @@ import Monitoring from './components/Monitoring';
 import Reports from './components/Reports';
 import AiChat from './components/AiChat';
 import AiInsights from './components/AiInsights';
+import ExternalScanner from './components/ExternalScanner';
 import './App.css';
 
 const API_BASE = 'http://localhost:8000';
@@ -19,6 +20,7 @@ const PAGE_LABELS = {
   monitoring: 'Monitoring',
   reports: 'Reports',
   detail: 'API Detail',
+  scanner: 'External Scanner',
   ai: 'AI Assistant',
 };
 
@@ -183,6 +185,8 @@ export default function App() {
         return <Monitoring />;
       case 'reports':
         return <Reports />;
+      case 'scanner':
+        return <ExternalScanner />;
       case 'ai':
         return <AiInsights onOpenChat={() => setChatOpen(true)} />;
       case 'inventory':

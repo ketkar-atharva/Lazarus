@@ -31,12 +31,14 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
   const [messages, setMessages] = useState([
     {
       role: 'ai',
-      content: "👋 Hi! I'm **Lazarus AI**, your API security assistant. I can help you understand security risks in plain English, answer questions about your APIs, generate compliance reports, and simulate attack scenarios.\n\nTry asking me something or use the quick actions below!",
+      content: "👋 Hi! I'm **Lazarus AI**, your API security assistant powered by Qwen via OpenRouter. I can answer any question about your APIs in plain English, explain risks, and suggest fixes.\n\nTry asking me something or use the quick actions below!",
     },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeFeature, setActiveFeature] = useState(null);
+  // Conversation history for multi-turn context (OpenAI message format)
+  const [chatHistory, setChatHistory] = useState([]);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -58,16 +60,31 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
     setMessages((prev) => [...prev, { role: 'user', content }]);
   };
 
-  /* ── NL Query ── */
+  /* ── NL Query → OpenRouter /api/ai/chat ── */
   const handleQuery = async (question) => {
     if (!question.trim()) return;
     addUserMessage(question);
     setInput('');
     setLoading(true);
     setActiveFeature('query');
+
+    // Snapshot history before the new user turn
+    const historySnapshot = [...chatHistory];
+
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/query`, { question });
-      addAiMessage(res.data.answer);
+      const res = await axios.post(`${API_BASE}/api/ai/chat`, {
+        question,
+        history: historySnapshot,
+      });
+      const answer = res.data.answer;
+      addAiMessage(answer);
+
+      // Extend history with this completed turn
+      setChatHistory((prev) => [
+        ...prev,
+        { role: 'user', content: question },
+        { role: 'assistant', content: answer },
+      ]);
     } catch (err) {
       const detail = err.response?.data?.detail || 'Failed to get AI response. Ensure the backend is running.';
       addAiMessage(`⚠ **Error:** ${detail}`);
@@ -167,7 +184,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
             </div>
             <div>
               <h3 className="ai-chat-title">Lazarus AI Assistant</h3>
-              <p className="ai-chat-subtitle">Local Engine • Offline Ready</p>
+              <p className="ai-chat-subtitle">Qwen via OpenRouter · Live AI</p>
             </div>
           </div>
           <button className="ai-chat-close" onClick={onClose} id="ai-chat-close">

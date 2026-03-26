@@ -15,6 +15,7 @@ const navItems = [
   { id: 'inventory', label: 'API Inventory', icon: Server },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
   { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'scanner', label: 'External Scanner', icon: Search },
   { id: 'ai', label: 'AI Assistant', icon: Sparkles },
 ];
 

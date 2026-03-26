@@ -1,6 +1,7 @@
 """
 AI Interpretation Layer for Lazarus — Zombie API Discovery & Defence.
 
+O
 Fully local, rule-based + context-aware AI engine.
 No external API dependencies. Uses project security data to generate
 intelligent, human-like responses.
@@ -786,4 +787,4 @@ def security_summary(all_apis: list, analysis: dict) -> str:
         f"Recommend prioritizing remediation of critical-risk APIs and investigating shadow endpoints."
     )
 
-    return summary
+    return summary 

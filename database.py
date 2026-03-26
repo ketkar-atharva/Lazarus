@@ -15,6 +15,7 @@ db = client["lazarus"]
 decommissions = db["decommissions"]
 honeypots = db["honeypots"]
 activity_log = db["activity_log"]
+redirect_rules = db["redirect_rules"]
 
 
 # ── Decommission Operations ──
@@ -101,6 +102,42 @@ def get_activity_log(limit: int = 50) -> list:
             .sort("timestamp", -1)
             .limit(limit)
         )
+    except Exception:
+        return []
+
+
+# ── Redirect Rules ──
+
+def save_redirect_rule(old_path: str, new_path: str):
+    """Save a redirect rule mapping old_path → new_path."""
+    try:
+        redirect_rules.replace_one(
+            {"_id": old_path},
+            {
+                "_id": old_path,
+                "old_path": old_path,
+                "new_path": new_path,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[DB] Failed to save redirect rule: {e}")
+
+
+def get_redirect_rule(old_path: str) -> str | None:
+    """Return new_path for old_path if a redirect rule exists, else None."""
+    try:
+        doc = redirect_rules.find_one({"_id": old_path}, {"new_path": 1})
+        return doc["new_path"] if doc else None
+    except Exception:
+        return None
+
+
+def get_all_redirect_rules() -> list:
+    """Return all saved redirect rules."""
+    try:
+        return list(redirect_rules.find({}, {"_id": 0}))
     except Exception:
         return []
 

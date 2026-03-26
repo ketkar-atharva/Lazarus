@@ -1,16 +1,3 @@
-<<<<<<< HEAD
-import google.generativeai as genai
-
-# Configure with your API key
-genai.configure(api_key="AIzaSyCEq7nuMsg0MbOz4mqawG1YB0EoOQT5FH8")
-
-# Get the model
-model = genai.GenerativeModel('gemini-2.0-flash')
-
-# Generate content
-response = model.generate_content("Say 'Hello World' in one word")
-print("✅ SUCCESS:", response.text)
-=======
 """Quick test to verify local AI engine works correctly."""
 import json
 
@@ -90,4 +77,3 @@ print("\n" + "=" * 60)
 print("  ✅ ALL TESTS PASSED — Local AI Engine is working!")
 print("  No external API dependencies required.")
 print("=" * 60)
->>>>>>> 8a9642397d03122c9b403ad399d8d8c2718785fe
