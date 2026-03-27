@@ -271,12 +271,6 @@ npm run dev
 
 ---
 
-## 📄 License
-
-This project is licensed under the **MIT License**.
-
----
-
 ## 💡 Tagline
 
 > **Lazarus — Protecting your API estate from the shadows.**
