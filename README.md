@@ -105,14 +105,6 @@ Scan any external endpoint for:
 
 ---
 
-### 5️⃣ Honeypot Deployment
-
-* Deploy traps on suspicious endpoints
-* Monitor malicious traffic attempts
-* Strengthen threat intelligence
-
----
-
 ### 6️⃣ AI-Powered Assistant
 
 Ask questions in plain English:
