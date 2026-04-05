@@ -6,7 +6,7 @@ Connection: mongodb://127.0.0.1:27017/lazarus
 from pymongo import MongoClient
 from datetime import datetime
 
-MONGO_URI = "mongodb://127.0.0.1:27017/lazarus"
+MONGO_URI = "mongodb+srv://atharvaketkar13_db_user:sudayPp8BSEzzRq1@clusterlazarus.gocznfd.mongodb.net/?appName=ClusterLazarus"
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
 db = client["lazarus"]
