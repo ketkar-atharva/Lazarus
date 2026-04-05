@@ -106,6 +106,18 @@ def get_activity_log(limit: int = 50) -> list:
         return []
 
 
+def get_honeypot_activity(limit: int = 100) -> list:
+    """Return all activity_log documents where action is honeypot_hit, sorted descending."""
+    try:
+        return list(
+            activity_log.find({"action": "honeypot_hit"}, {"_id": 0})
+            .sort("timestamp", -1)
+            .limit(limit)
+        )
+    except Exception:
+        return []
+
+
 # ── Redirect Rules ──
 
 def save_redirect_rule(old_path: str, new_path: str):

@@ -10,6 +10,7 @@ import Reports from './components/Reports';
 import AiChat from './components/AiChat';
 import AiInsights from './components/AiInsights';
 import ExternalScanner from './components/ExternalScanner';
+import Honeypots from './components/Honeypots';
 import './App.css';
 
 const API_BASE = 'http://localhost:8000';
@@ -22,6 +23,7 @@ const PAGE_LABELS = {
   detail: 'API Detail',
   scanner: 'External Scanner',
   ai: 'AI Assistant',
+  honeypots: 'Honeypot Dashboard',
 };
 
 export default function App() {
@@ -189,6 +191,8 @@ export default function App() {
         return <ExternalScanner />;
       case 'ai':
         return <AiInsights onOpenChat={() => setChatOpen(true)} />;
+      case 'honeypots':
+        return <Honeypots />;
       case 'inventory':
         return (
           <Dashboard

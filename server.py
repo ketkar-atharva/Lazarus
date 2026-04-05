@@ -363,6 +363,12 @@ def get_honeypots():
     return db.get_all_honeypots()
 
 
+@app.get("/api/honeypots/activity")
+def get_honeypot_activity():
+    """Return all activity logs matching a honeypot hit."""
+    return db.get_honeypot_activity()
+
+
 @app.post("/api/decommission")
 def decommission_api(req: DecommissionRequest):
     # Check if already decommissioned

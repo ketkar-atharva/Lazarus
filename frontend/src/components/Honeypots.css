@@ -1,0 +1,350 @@
+/* Light Theme Honeypot Dashboard CSS matching global index.css */
+
+.hp-container {
+  padding: 0;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.hp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.hp-title-section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.hp-title {
+  font-size: 24px;
+  font-weight: 800;
+  color: #1e293b;
+  margin-bottom: 2px;
+  letter-spacing: -0.5px;
+}
+
+.hp-subtitle {
+  color: #64748b;
+  font-size: 13.5px;
+}
+
+.hp-metrics-row {
+  display: flex;
+  gap: 14px;
+}
+
+.hp-metric-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px 24px;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
+.hp-metric-value {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+  color: #1e293b;
+}
+
+.hp-metric-label {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.hp-alert-banner {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px 20px;
+  margin-bottom: 24px;
+  animation: slideDown 0.3s ease-out;
+}
+
+.hp-pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  animation: pulse-red 1.5s infinite;
+}
+
+@keyframes pulse-red {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.hp-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 24px;
+}
+
+.hp-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 13.5px;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  background: transparent;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  cursor: pointer;
+}
+
+.hp-tab:hover {
+  color: #1e293b;
+  background: #f8fafc;
+}
+
+.hp-tab.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  background: #eff6ff;
+}
+
+.hp-tab-panel {
+  min-height: 400px;
+}
+
+/* Activity Log */
+.hp-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hp-log-row {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
+.hp-log-row.new-hit {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.hp-log-row.expanded {
+  border-color: #bfdbfe;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.hp-log-header {
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hp-log-header:hover {
+  background: #f8fafc;
+}
+
+.hp-method-badge {
+  background: #fef2f2;
+  color: #dc2626;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border: 1px solid #fecaca;
+}
+
+.hp-new-badge {
+  background: #ef4444;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.hp-log-path {
+  color: #3b82f6;
+  font-weight: 500;
+}
+
+.hp-log-details {
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+  padding: 24px;
+}
+
+.hp-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.hp-detail-group label {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.hp-value.mono {
+  font-family: 'JetBrains Mono', monospace;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.hp-code-block {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px;
+  color: #334155;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.hp-code-block.success {
+  border-color: #bbf7d0;
+  color: #047857;
+  background: #f0fdf4;
+}
+
+/* Active Traps */
+.hp-traps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.hp-trap-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
+.hp-trap-badge {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.hp-trap-counts {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+/* Decoy Preview */
+.hp-preview-browser {
+  width: 100%;
+  max-width: 800px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+}
+
+.hp-browser-header {
+  background: #f8fafc;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.hp-browser-header .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.hp-browser-url {
+  flex: 1;
+  background: #ffffff;
+  margin-left: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.hp-browser-body {
+  padding: 24px;
+}
+
+/* Let the preview code block look like a JSON dark window anyway just for realistic visual contrast */
+.hp-browser-body .hp-code-block {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-color: #1e293b;
+}
+
+.hp-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+  background: #ffffff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+}
+
+.hp-empty-state h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 8px;
+}
+
+.hp-empty-state p {
+  color: #64748b;
+  font-size: 13.5px;
+}

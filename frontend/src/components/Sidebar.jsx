@@ -8,12 +8,14 @@ import {
   Bell,
   ChevronRight,
   Sparkles,
+  Crosshair,
 } from 'lucide-react';
 
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'inventory', label: 'API Inventory', icon: Server },
   { id: 'monitoring', label: 'Monitoring', icon: Activity },
+  { id: 'honeypots', label: 'Honeypots', icon: Crosshair },
   { id: 'reports', label: 'Reports', icon: FileText },
   { id: 'scanner', label: 'External Scanner', icon: Search },
   { id: 'ai', label: 'AI Assistant', icon: Sparkles },
