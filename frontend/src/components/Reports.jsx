@@ -27,6 +27,27 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [selectedLog, setSelectedLog] = useState(null);
   const [redirectRules, setRedirectRules] = useState([]);
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownloadPdf = async (apiId) => {
+    try {
+      setDownloading(true);
+      const response = await api.get(`/api/compliance-report/pdf?api_id=${apiId}`, {
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `lazarus-report-${apiId}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      console.error('Failed to download PDF', err);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -132,9 +153,24 @@ export default function Reports() {
             <FileText className="w-5 h-5 text-blue-500" />
             <h3 className="card-title">Decommission Compliance Report</h3>
           </div>
-          <span className="report-status-pill">
-            <CheckCircle2 className="w-3.5 h-3.5" /> Audit Ready
-          </span>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <span className="report-status-pill">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Audit Ready
+            </span>
+            <button 
+              onClick={() => handleDownloadPdf(log.api_id)}
+              className="btn-download-pdf"
+              disabled={downloading}
+              style={{ cursor: downloading ? 'not-allowed' : 'pointer' }}
+            >
+              {downloading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              {downloading ? 'Downloading...' : 'Download PDF'}
+            </button>
+          </div>
         </div>
         <div className="report-meta-grid">
           <div className="report-meta">

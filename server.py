@@ -1,6 +1,9 @@
+from contextlib import asynccontextmanager
+import asyncio
+
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, Response
 from pydantic import BaseModel
 from datetime import datetime
 from mock_data import (
@@ -17,15 +20,60 @@ from email_notifier import send_decommission_email
 import kong_client
 from auth import get_current_user, router as auth_router
 from csv_ingestion import router as catalog_router
+from probe_engine import probe_and_classify
 import requests as req_lib
+import io
 import time
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 from urllib.parse import urlparse
 from path_utils import normalize_path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="Lazarus — Zombie API Discovery & Defence")
+PROBE_INTERVAL_SECONDS = 30 * 60  # 30 minutes
+
+
+async def _background_probe_loop():
+    """Background task: re-probe all catalog APIs every 30 minutes."""
+    while True:
+        await asyncio.sleep(PROBE_INTERVAL_SECONDS)
+        try:
+            apis = await db.get_all_api_catalog()
+            if not apis:
+                continue
+            # Snapshot old statuses
+            old_statuses = {a["api_id"]: a.get("lazarus_status", "ACTIVE") for a in apis}
+            results = await probe_and_classify(apis)
+            for result in results:
+                aid = result.get("api_id")
+                new_status = result.get("lazarus_status", "ACTIVE")
+                old_status = old_statuses.get(aid, "ACTIVE")
+                await db.upsert_api_catalog({**result, "ingested_at": datetime.utcnow().isoformat() + "Z"})
+                if old_status != new_status:
+                    await db.log_status_change(aid, old_status, new_status)
+            print(f"[Probe] Background probe complete: {len(results)} APIs re-classified.")
+        except Exception as e:
+            print(f"[Probe] Background probe failed: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """FastAPI lifespan: start background probe task on startup."""
+    task = asyncio.create_task(_background_probe_loop())
+    print("[Probe] Background probe loop started (interval: 30 min).")
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Lazarus — Zombie API Discovery & Defence", lifespan=lifespan)
 
 # ── Include Routers ──
 app.include_router(auth_router)
@@ -127,11 +175,11 @@ async def redirect_rule_middleware(request: Request, call_next):
     ):
         return await call_next(request)
 
-    target = db.get_redirect_rule(path)
-    is_decomm = db.is_decommissioned(path)
+    target = await db.get_redirect_rule(path)
+    is_decomm = await db.is_decommissioned(path)
 
     if target or is_decomm:
-        record = db.get_decommission_by_path(path) or {}
+        record = await db.get_decommission_by_path(path) or {}
         reason = record.get("reason", "Security risk — decommissioned by Lazarus platform.")
         ts = record.get("completed_at") or record.get("initiated_at") or datetime.utcnow().isoformat() + "Z"
 
@@ -414,9 +462,9 @@ def _synthesize_security_details(api: dict) -> tuple:
     return posture, reasoning, recommendations
 
 
-def _get_effective_catalog() -> list:
+async def _get_effective_catalog() -> list:
     """Return catalog from MongoDB if populated, else fall back to mock_data."""
-    mongo_catalog = db.get_all_api_catalog()
+    mongo_catalog = await db.get_all_api_catalog()
     if mongo_catalog:
         return mongo_catalog
     return EXPECTED_CATALOG
@@ -446,15 +494,15 @@ def _get_effective_traffic(catalog: list) -> list:
 
 
 @app.get("/")
-def root_explorer():
+async def root_explorer():
     """HTML API catalog — shown when browser visits localhost:8000."""
-    return HTMLResponse(content=_build_catalog_html(_get_effective_catalog()))
+    return HTMLResponse(content=_build_catalog_html(await _get_effective_catalog()))
 
 
 @app.get("/api/catalog")
-def get_catalog(request: Request, current_user: dict = Depends(get_current_user)):
+async def get_catalog(request: Request, current_user: dict = Depends(get_current_user)):
     """Return API catalog. Serves HTML to browsers, JSON to API clients."""
-    catalog = _get_effective_catalog()
+    catalog = await _get_effective_catalog()
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
         return HTMLResponse(content=_build_catalog_html(catalog))
@@ -462,14 +510,14 @@ def get_catalog(request: Request, current_user: dict = Depends(get_current_user)
 
 
 @app.get("/api/traffic")
-def get_traffic(current_user: dict = Depends(get_current_user)):
-    catalog = _get_effective_catalog()
+async def get_traffic(current_user: dict = Depends(get_current_user)):
+    catalog = await _get_effective_catalog()
     return _get_effective_traffic(catalog)
 
 
 @app.get("/api/analyze")
-def get_analysis(current_user: dict = Depends(get_current_user)):
-    catalog = _get_effective_catalog()
+async def get_analysis(current_user: dict = Depends(get_current_user)):
+    catalog = await _get_effective_catalog()
     traffic = _get_effective_traffic(catalog)
     return analyze_api_discrepancies(catalog, traffic)
 
@@ -484,13 +532,13 @@ def health():
 # ── Detail Endpoint ──
 
 @app.get("/api/detail")
-def api_detail(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
+async def api_detail(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
     if not api_id and not path:
         raise HTTPException(status_code=400, detail="Provide api_id or path query param.")
 
     # Try DB catalog first (CSV-ingested), then fall back to mock_data
     result = None
-    mongo_catalog = db.get_all_api_catalog()
+    mongo_catalog = await db.get_all_api_catalog()
     if mongo_catalog:
         for api in mongo_catalog:
             raw_url = api.get("url") or api.get("path") or ""
@@ -531,9 +579,9 @@ def api_detail(api_id: str = None, path: str = None, current_user: dict = Depend
         raise HTTPException(status_code=404, detail="API not found.")
 
     check_path = path or result.get("path")
-    if check_path and db.is_decommissioned(check_path):
+    if check_path and await db.is_decommissioned(check_path):
         result["is_decommissioned"] = True
-        result["decommission_record"] = db.get_decommission_by_path(check_path)
+        result["decommission_record"] = await db.get_decommission_by_path(check_path)
     else:
         result["is_decommissioned"] = False
 
@@ -543,26 +591,26 @@ def api_detail(api_id: str = None, path: str = None, current_user: dict = Depend
 # ── Defence Endpoints ──
 
 @app.post("/api/defend")
-def defend_api(req: DefendRequest, current_user: dict = Depends(get_current_user)):
-    db.save_honeypot(req.path)
+async def defend_api(req: DefendRequest, current_user: dict = Depends(get_current_user)):
+    await db.save_honeypot(req.path)
     return {"status": "honeypot_deployed", "path": req.path}
 
 
 @app.get("/api/honeypots")
-def get_honeypots(current_user: dict = Depends(get_current_user)):
+async def get_honeypots(current_user: dict = Depends(get_current_user)):
     """Return all persisted honeypot paths."""
-    return db.get_all_honeypots()
+    return await db.get_all_honeypots()
 
 
 @app.get("/api/honeypots/activity")
-def get_honeypot_activity(current_user: dict = Depends(get_current_user)):
+async def get_honeypot_activity(current_user: dict = Depends(get_current_user)):
     """Return all activity logs matching a honeypot hit."""
-    return db.get_honeypot_activity()
+    return await db.get_honeypot_activity()
 
 
 @app.post("/api/decommission")
 async def decommission_api(req: DecommissionRequest, current_user: dict = Depends(get_current_user)):
-    existing = db.get_decommission_by_path(req.path)
+    existing = await db.get_decommission_by_path(req.path)
     if existing:
         return {
             **existing,
@@ -625,7 +673,7 @@ async def decommission_api(req: DecommissionRequest, current_user: dict = Depend
         },
     }
 
-    db.save_decommission(entry)
+    await db.save_decommission(entry)
 
     # ── Kong gateway decommission ──
     try:
@@ -635,14 +683,14 @@ async def decommission_api(req: DecommissionRequest, current_user: dict = Depend
     entry["kong_result"] = kong_result
 
     if req.redirect_to and req.redirect_to.strip():
-        db.save_redirect_rule(req.path, req.redirect_to.strip())
+        await db.save_redirect_rule(req.path, req.redirect_to.strip())
         entry["redirect_to"] = req.redirect_to.strip()
 
     email_result = send_decommission_email(entry)
     entry["stakeholder_notifications"][0]["status"] = email_result["status"]
     if email_result.get("error"):
         entry["stakeholder_notifications"][0]["error"] = email_result["error"]
-    db.save_decommission(entry)
+    await db.save_decommission(entry)
 
     entry["email_sent"] = email_result
     return entry
@@ -671,21 +719,21 @@ def get_monitoring(current_user: dict = Depends(get_current_user)):
 
 
 @app.get("/api/decommission-log")
-def get_decommission_log(current_user: dict = Depends(get_current_user)):
+async def get_decommission_log(current_user: dict = Depends(get_current_user)):
     """Return all decommission records from MongoDB."""
-    return db.get_all_decommissions()
+    return await db.get_all_decommissions()
 
 
 @app.get("/api/activity-log")
-def get_activity_log(current_user: dict = Depends(get_current_user)):
+async def get_activity_log(current_user: dict = Depends(get_current_user)):
     """Return recent activity log from MongoDB."""
-    return db.get_activity_log()
+    return await db.get_activity_log()
 
 
 @app.get("/api/redirect-rules")
-def get_redirect_rules(current_user: dict = Depends(get_current_user)):
+async def get_redirect_rules(current_user: dict = Depends(get_current_user)):
     """Return all active redirect rules from MongoDB."""
-    return db.get_all_redirect_rules()
+    return await db.get_all_redirect_rules()
 
 
 # ── Mock Target Endpoints (for Redirect targets) ──
@@ -863,9 +911,9 @@ def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_cur
 
 
 @app.get("/api/compliance-report")
-def get_compliance_report(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
+async def get_compliance_report(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
     """Generate a compliance report for a decommissioned API."""
-    logs = db.get_all_decommissions()
+    logs = await db.get_all_decommissions()
     entry = None
     for log in logs:
         if (api_id and log.get("api_id") == api_id) or (path and log.get("path") == path):
@@ -906,10 +954,167 @@ def get_compliance_report(api_id: str = None, path: str = None, current_user: di
     }
 
 
+@app.get("/api/compliance-report/pdf")
+async def get_compliance_report_pdf(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
+    """Generate a PDF compliance report for a decommissioned API."""
+    if not api_id and not path:
+        raise HTTPException(status_code=400, detail="Provide api_id or path query param.")
+
+    # Fetch the original JSON data
+    report_data = await get_compliance_report(api_id=api_id, path=path, current_user=current_user)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'MainTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        spaceAfter=14,
+        textColor=colors.HexColor('#1e293b')
+    )
+    heading_style = ParagraphStyle(
+        'SubHead',
+        parent=styles['Heading2'],
+        fontSize=14,
+        spaceAfter=10,
+        textColor=colors.HexColor('#334155')
+    )
+    normal_style = styles["Normal"]
+
+    story = []
+
+    # 0. Logo
+    import os
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lazarus_logo.png")
+    if os.path.exists(logo_path):
+        logo_img = Image(logo_path, width=70, height=70)
+        logo_img.hAlign = 'LEFT'
+        story.append(logo_img)
+        story.append(Spacer(1, 10))
+
+    # 1. Title
+    story.append(Paragraph("Lazarus Decommission Report", title_style))
+    story.append(Spacer(1, 12))
+
+    # 2. Main Details
+    record = report_data.get("decommission_record", {})
+    api_id_val = report_data.get("api_id", "N/A")
+    api_path = report_data.get("api_path", "N/A")
+    decomm_date = record.get("completed_at", "N/A")
+    operator = record.get("operator", "N/A")
+
+    details = [
+        [Paragraph("<b>API ID:</b>", normal_style), Paragraph(api_id_val, normal_style)],
+        [Paragraph("<b>Path:</b>", normal_style), Paragraph(api_path, normal_style)],
+        [Paragraph("<b>Decommission Date:</b>", normal_style), Paragraph(decomm_date, normal_style)],
+        [Paragraph("<b>Operator:</b>", normal_style), Paragraph(operator, normal_style)],
+    ]
+    t = Table(details, colWidths=[120, 300])
+    t.setStyle(TableStyle([
+        ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#1e293b')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 16))
+
+    # 2b. Snapshot Details
+    st_posture = report_data.get("security_posture_snapshot", {})
+    score = st_posture.get("overall_score", "N/A")
+    sec_risk_level = st_posture.get("risk_level", "LOW")
+    scan_dt_raw = report_data.get("generated_at", "N/A")
+    scan_dt = str(scan_dt_raw)[:19].replace("T", " ") if "T" in str(scan_dt_raw) else str(scan_dt_raw)
+
+    posture_details = [
+        [Paragraph("<b>Report Generated:</b>", normal_style), Paragraph(scan_dt, normal_style)],
+        [Paragraph("<b>Security Score:</b>", normal_style), Paragraph(str(score) + "/100", normal_style)],
+        [Paragraph("<b>Security Risk Level:</b>", normal_style), Paragraph(str(sec_risk_level), normal_style)]
+    ]
+    tp = Table(posture_details, colWidths=[120, 300])
+    tp.setStyle(TableStyle([
+        ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#1e293b')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(tp)
+    story.append(Spacer(1, 16))
+
+    # 3. Risk Before/After
+    story.append(Paragraph("Risk Summary", heading_style))
+    comp_sum = record.get("compliance_summary", {})
+    risk_before = comp_sum.get("risk_before", "N/A")
+    risk_after = comp_sum.get("risk_after", "N/A")
+    
+    risk_data = [
+        [Paragraph("<b>Risk Before:</b>", normal_style), Paragraph(risk_before, normal_style)],
+        [Paragraph("<b>Risk After:</b>", normal_style), Paragraph(risk_after, normal_style)],
+    ]
+    t_risk = Table(risk_data, colWidths=[120, 300])
+    t_risk.setStyle(TableStyle([
+        ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#1e293b')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(t_risk)
+    story.append(Spacer(1, 16))
+
+    # 4. Decommission Steps
+    story.append(Paragraph("Execution Steps", heading_style))
+    steps = record.get("steps_completed", [])
+    step_data = [["Step", "Action", "Status", "Timestamp"]]
+    for s in steps:
+        step_data.append([
+            str(s.get("step", "")),
+            Paragraph(s.get("action", ""), normal_style),
+            s.get("status", ""),
+            s.get("timestamp", "")[:19].replace("T", " ")
+        ])
+    
+    if len(step_data) > 1:
+        t_steps = Table(step_data, colWidths=[40, 200, 70, 140])
+        t_steps.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.HexColor('#475569')),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0,0), (-1,0), 6),
+            ('TOPPADDING', (0,0), (-1,0), 6),
+            ('GRID', (0,0), (-1,-1), 1, colors.HexColor('#e2e8f0')),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ]))
+        story.append(t_steps)
+    else:
+        story.append(Paragraph("No steps recorded.", normal_style))
+    
+    story.append(Spacer(1, 16))
+
+    # 5. Regulatory Requirements
+    story.append(Paragraph("Regulatory Requirements Met", heading_style))
+    reg = report_data.get("regulatory_compliance", {})
+    reqs = reg.get("requirements_met", [])
+    for r in reqs:
+        story.append(Paragraph(f"• {r}", normal_style))
+        story.append(Spacer(1, 4))
+
+    # Build PDF
+    doc.build(story)
+    
+    pdf_content = buffer.getvalue()
+    buffer.close()
+    
+    headers = {
+        "Content-Disposition": f"attachment; filename=lazarus-report-{api_id_val}.pdf"
+    }
+    return Response(content=pdf_content, media_type="application/pdf", headers=headers)
+
 @app.get("/api/db-status")
-def db_status():
+async def db_status():
     """Check MongoDB connection status."""
-    return {"connected": db.is_connected(), "uri": "mongodb://127.0.0.1:27017/lazarus"}
+    return {"connected": await db.is_connected(), "uri": "mongodb://127.0.0.1:27017/lazarus"}
 
 
 # ── AI Interpretation Layer Endpoints ──
@@ -929,10 +1134,10 @@ class AiChatRequest(BaseModel):
     history: list = []
 
 
-def _gather_all_api_details():
+async def _gather_all_api_details():
     """Gather full detail for every known API (catalog + shadow)."""
     all_details = []
-    catalog = _get_effective_catalog()
+    catalog = await _get_effective_catalog()
     traffic = _get_effective_traffic(catalog)
     for api in catalog:
         api_id = api.get("id") or api.get("api_id")
@@ -976,24 +1181,24 @@ def ai_explain_risk(req: AiApiRequest, current_user: dict = Depends(get_current_
 
 
 @app.post("/api/ai/query")
-def ai_query(req: AiQueryRequest, current_user: dict = Depends(get_current_user)):
+async def ai_query(req: AiQueryRequest, current_user: dict = Depends(get_current_user)):
     """Natural Language Security Query — ask questions in plain English (local engine)."""
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Provide a question.")
-    all_details = _gather_all_api_details()
-    catalog = _get_effective_catalog()
+    all_details = await _gather_all_api_details()
+    catalog = await _get_effective_catalog()
     analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     result = ai_engine.query_security(req.question, all_details, analysis)
     return {"question": req.question, "answer": result}
 
 
 @app.post("/api/ai/chat")
-def ai_chat(req: AiChatRequest, current_user: dict = Depends(get_current_user)):
+async def ai_chat(req: AiChatRequest, current_user: dict = Depends(get_current_user)):
     """OpenRouter / Qwen-powered conversational AI chat."""
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Provide a question.")
-    all_details = _gather_all_api_details()
-    catalog = _get_effective_catalog()
+    all_details = await _gather_all_api_details()
+    catalog = await _get_effective_catalog()
     analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     answer = openrouter_engine.chat_with_openrouter(
         question=req.question,
@@ -1029,22 +1234,28 @@ def ai_attack_simulation(req: AiApiRequest, current_user: dict = Depends(get_cur
 
 
 @app.get("/api/ai/security-summary")
-def ai_security_summary(current_user: dict = Depends(get_current_user)):
+async def ai_security_summary(current_user: dict = Depends(get_current_user)):
     """AI Security Summary — executive overview for dashboard."""
-    all_details = _gather_all_api_details()
-    catalog = _get_effective_catalog()
+    all_details = await _gather_all_api_details()
+    catalog = await _get_effective_catalog()
     analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     result = ai_engine.security_summary(all_details, analysis)
     return {"summary": result}
 
 
+# ── Status Change Log Endpoint ──
+
+@app.get("/api/status-changes")
+async def get_status_changes(current_user: dict = Depends(get_current_user)):
+    """Return recent status change log entries from background probe."""
+    return await db.get_status_changes()
+
+
 if __name__ == "__main__":
     import uvicorn
     print("\n🔒 Lazarus — Zombie API Discovery & Defence")
-    print(f"   MongoDB: {'✅ Connected' if db.is_connected() else '❌ Not connected'}")
-    print(f"   Persisted decommissions: {len(db.get_all_decommissions())}")
-    print(f"   Persisted honeypots: {len(db.get_all_honeypots())}")
-    print(f"   Catalog APIs in MongoDB: {db.get_api_catalog_count()}")
+    print("   MongoDB: async (motor) — check /api/db-status after startup")
+    print("   Background probe: every 30 minutes")
     print(f"   AI Engine: ✅ Local + OpenRouter Active")
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000)

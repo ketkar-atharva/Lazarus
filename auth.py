@@ -91,7 +91,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
-    user = db.get_user_by_email(email)
+    user = await db.get_user_by_email(email)
     if not user:
         raise credentials_exception
     return _safe_user(user)
@@ -100,7 +100,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 # ── POST /auth/signup ──
 
 @router.post("/signup", status_code=201)
-def signup(req: SignupRequest):
+async def signup(req: SignupRequest):
     """
     Register a new bank employee account.
     Email must end with the configured BANK_EMAIL_DOMAIN.
@@ -120,7 +120,7 @@ def signup(req: SignupRequest):
             detail={"detail": "Password must be at least 8 characters.", "code": "WEAK_PASSWORD"},
         )
 
-    existing = db.get_user_by_email(req.email.lower())
+    existing = await db.get_user_by_email(req.email.lower())
     if existing:
         raise HTTPException(
             status_code=409,
@@ -138,7 +138,7 @@ def signup(req: SignupRequest):
     }
 
     try:
-        db.create_user(user_doc)
+        await db.create_user(user_doc)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -151,13 +151,13 @@ def signup(req: SignupRequest):
 # ── POST /auth/login ──
 
 @router.post("/login", response_model=TokenResponse)
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Authenticate a bank user and return a JWT access token.
     Uses OAuth2PasswordRequestForm (username = email).
     """
     email = form_data.username.lower()
-    user = db.get_user_by_email(email)
+    user = await db.get_user_by_email(email)
 
     if not user or not _verify_password(form_data.password, user.get("hashed_password", "")):
         raise HTTPException(
@@ -166,7 +166,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    db.update_user_last_login(email)
+    await db.update_user_last_login(email)
 
     token = _create_access_token({"sub": email})
     return {
@@ -179,6 +179,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 # ── GET /auth/me ──
 
 @router.get("/me")
-def get_me(current_user: dict = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user)):
     """Return the currently authenticated user's profile."""
     return current_user

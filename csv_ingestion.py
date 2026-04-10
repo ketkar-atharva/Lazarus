@@ -252,8 +252,8 @@ async def upload_catalog(
                 **result,
                 "ingested_at": datetime.utcnow().isoformat() + "Z",
             }
-            existing = db.get_api_catalog_by_id(result["api_id"])
-            db.upsert_api_catalog(doc)
+            existing = await db.get_api_catalog_by_id(result["api_id"])
+            await db.upsert_api_catalog(doc)
             if existing:
                 updated += 1
             else:
@@ -265,7 +265,7 @@ async def upload_catalog(
         except Exception as e:
             errors.append({"api_id": result.get("api_id"), "error": str(e)})
 
-    db.log_activity(
+    await db.log_activity(
         "catalog_upload",
         file.filename,
         (
@@ -387,7 +387,7 @@ async def probe_upload(
                 **result,
                 "ingested_at": datetime.utcnow().isoformat() + "Z",
             }
-            db.upsert_api_catalog(doc)
+            await db.upsert_api_catalog(doc)
 
             ls = result.get("lazarus_status", "ACTIVE")
             if ls in status_counts:
@@ -395,7 +395,7 @@ async def probe_upload(
         except Exception as e:
             upsert_errors.append({"api_id": result.get("api_id"), "error": str(e)})
 
-    db.log_activity(
+    await db.log_activity(
         "probe_upload",
         file.filename,
         (
@@ -418,18 +418,18 @@ async def probe_upload(
 # ── GET /catalog ──
 
 @router.get("")
-def get_catalog():
+async def get_catalog():
     """Return all APIs from the MongoDB api_catalog collection."""
-    docs = db.get_all_api_catalog()
+    docs = await db.get_all_api_catalog()
     return docs
 
 
 # ── GET /catalog/export ──
 
 @router.get("/export")
-def export_catalog():
+async def export_catalog():
     """Download the current api_catalog as a CSV file."""
-    docs = db.get_all_api_catalog()
+    docs = await db.get_all_api_catalog()
     if not docs:
         raise HTTPException(
             status_code=404,
@@ -499,9 +499,9 @@ def get_sample_csv():
 # ── GET /catalog/{api_id} ──
 
 @router.get("/{api_id}")
-def get_catalog_api(api_id: str):
+async def get_catalog_api(api_id: str):
     """Return a single API record from the catalog by api_id."""
-    doc = db.get_api_catalog_by_id(api_id)
+    doc = await db.get_api_catalog_by_id(api_id)
     if not doc:
         raise HTTPException(
             status_code=404,
