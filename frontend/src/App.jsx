@@ -16,6 +16,22 @@ import Login from './components/Login';
 import Signup from './components/Signup';
 import './App.css';
 
+// ── Path normalization (mirrors backend) ──
+function normalizePath(path) {
+  if (!path || typeof path !== 'string') return path;
+  // 1. Lowercase
+  let normalized = path.toLowerCase();
+  // 2. Remove query parameters
+  normalized = normalized.split('?')[0];
+  // 3. Collapse consecutive slashes
+  normalized = normalized.replace(/\/+/g, '/');
+  // 4. Strip trailing slash (except for root '/')
+  if (normalized !== '/') {
+    normalized = normalized.replace(/\/$/, '');
+  }
+  return normalized;
+}
+
 const PAGE_LABELS = {
   dashboard: 'Dashboard',
   inventory:  'API Inventory',
@@ -141,7 +157,7 @@ function MainShell() {
   const handleNavigate = useCallback((page) => navigateTo(page, null), [navigateTo]);
 
   /* ── Compute counts for sidebar ── */
-  const catalogPaths = new Set(catalog.map(a => a.path));
+  const catalogPaths = new Set(catalog.map(a => normalizePath(a.path)));
   let shadowCount = 0, zombieCount = 0, staleCount = 0, activeCount = 0;
   catalog.forEach(api => {
     // Support both mock_data format (is_deprecated) and csv format (lazarus_status)
@@ -152,14 +168,14 @@ function MainShell() {
       else if (lazStatus === 'stale')  staleCount++;
       else activeCount++;
     } else {
-      const flow = traffic.find(t => t.path === api.path);
+      const flow = traffic.find(t => normalizePath(t.path) === normalizePath(api.path));
       if (api.is_deprecated && flow && flow.hit_count > 0) zombieCount++;
       else if (!flow || flow.hit_count === 0) staleCount++;
       else activeCount++;
     }
   });
   traffic.forEach(flow => {
-    if (!catalogPaths.has(flow.path)) shadowCount++;
+    if (!catalogPaths.has(normalizePath(flow.path))) shadowCount++;
   });
 
   const apiCounts = {

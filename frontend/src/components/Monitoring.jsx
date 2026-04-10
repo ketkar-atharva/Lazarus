@@ -266,7 +266,7 @@ export default function Monitoring() {
           <div className="infra-section">
             <p className="infra-label"><Server className="w-3.5 h-3.5" /> API Gateways</p>
             <div className="infra-items">
-              {data.gateways_monitored.map(gw => (
+              {data.gateways_monitored.filter(gw => gw !== "AWS API Gateway" && gw !== "Internal Nginx Proxy").map(gw => (
                 <div key={gw} className="infra-item">
                   <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
                   <span>{gw}</span>
