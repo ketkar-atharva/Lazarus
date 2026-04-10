@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
 import ReactMarkdown from 'react-markdown';
 import {
   X,
@@ -18,7 +18,7 @@ import {
   Shield,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 const QUICK_ACTIONS = [
   { label: 'Which APIs have no authentication?', icon: Shield },
@@ -72,7 +72,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
     const historySnapshot = [...chatHistory];
 
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/chat`, {
+      const res = await api.post('/api/ai/chat', {
         question,
         history: historySnapshot,
       });
@@ -104,7 +104,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
     setLoading(true);
     setActiveFeature('explain');
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/explain-risk`, {
+      const res = await api.post('/api/ai/explain-risk', {
         api_id: apiContext.id,
         path: apiContext.path,
       });
@@ -128,7 +128,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
     setLoading(true);
     setActiveFeature('report');
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/generate-report`, {
+      const res = await api.post('/api/ai/generate-report', {
         api_id: apiContext.id,
         path: apiContext.path,
       });
@@ -152,7 +152,7 @@ export default function AiChat({ isOpen, onClose, apiContext }) {
     setLoading(true);
     setActiveFeature('attack');
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/attack-simulation`, {
+      const res = await api.post('/api/ai/attack-simulation', {
         api_id: apiContext.id,
         path: apiContext.path,
       });

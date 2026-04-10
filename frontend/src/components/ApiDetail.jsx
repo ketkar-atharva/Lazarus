@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
+import DecommissionConfirmPanel from './DecommissionConfirmPanel';
 import ReactMarkdown from 'react-markdown';
 import {
   ArrowLeft,
@@ -35,7 +36,7 @@ import {
   Loader2,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 /* ── Security Check Row ── */
 const SecurityCheck = ({ label, data }) => {
@@ -122,7 +123,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
         const params = apiId && !apiId.startsWith('SHADOW-')
           ? { api_id: apiId }
           : { path: apiPath };
-        const res = await axios.get(`${API_BASE}/api/detail`, { params });
+        const res = await api.get('/api/detail', { params });
         if (cancelled) return;
         setDetail(res.data);
         // Restore decommissioned state persisted in MongoDB
@@ -146,7 +147,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
     if (!detail) return;
     setDecommissioning(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/decommission`, {
+      const res = await api.post('/api/decommission', {
         api_id: detail.id,
         path: detail.path,
         reason: 'Security risk — decommissioned via Lazarus platform.',
@@ -434,7 +435,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                     onClick={async () => {
                       setAiExplanationLoading(true);
                       try {
-                        const res = await axios.post(`${API_BASE}/api/ai/explain-risk`, {
+                        const res = await api.post('/api/ai/explain-risk', {
                           api_id: detail.id,
                           path: detail.path,
                         });
@@ -486,7 +487,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                     onClick={async () => {
                       setAttackSimLoading(true);
                       try {
-                        const res = await axios.post(`${API_BASE}/api/ai/attack-simulation`, {
+                        const res = await api.post('/api/ai/attack-simulation', {
                           api_id: detail.id,
                           path: detail.path,
                         });
@@ -538,7 +539,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                     onClick={async () => {
                       setAiReportLoading(true);
                       try {
-                        const res = await axios.post(`${API_BASE}/api/ai/generate-report`, {
+                        const res = await api.post('/api/ai/generate-report', {
                           api_id: detail.id,
                           path: detail.path,
                         });
@@ -641,6 +642,9 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                       <p>All steps executed successfully at {decommissionResult?.initiated_at ? new Date(decommissionResult.initiated_at).toLocaleString() : 'now'}.</p>
                     </div>
                   </div>
+
+                  {/* Dual-Blocker Confirmation Panel */}
+                  <DecommissionConfirmPanel result={decommissionResult} apiPath={detail.path} />
 
                   <div className="decom-success-body">
                     {/* Redirect Badge */}

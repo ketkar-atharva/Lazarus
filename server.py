@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
@@ -14,11 +14,22 @@ import ai_engine
 import openrouter_engine
 import database as db
 from email_notifier import send_decommission_email
+import kong_client
+from auth import get_current_user, router as auth_router
+from csv_ingestion import router as catalog_router
 import requests as req_lib
 import time
 from urllib.parse import urlparse
+from path_utils import normalize_path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="Lazarus — Zombie API Discovery & Defence")
+
+# ── Include Routers ──
+app.include_router(auth_router)
+app.include_router(catalog_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,25 +112,30 @@ async def redirect_rule_middleware(request: Request, call_next):
     1. If a redirect rule exists for the path → HTTP 301 to new path.
     2. Else if the path is decommissioned → serve the safe HTML fallback page.
     3. Otherwise → pass through normally.
-    Skip /api/decommission* endpoints to avoid infinite loops.
+    Skip /api/decommission*, /auth/*, /catalog/* endpoints to avoid loops.
     """
-    path = request.url.path
+    path = normalize_path(request.url.path)
 
-    if path.startswith("/api/decommission"):
+    # Skip protected internal routes
+    if (
+        path.startswith("/api/decommission")
+        or path.startswith("/auth/")
+        or path.startswith("/catalog/")
+        or path.startswith("/docs")
+        or path.startswith("/openapi")
+        or path.startswith("/redoc")
+    ):
         return await call_next(request)
 
     target = db.get_redirect_rule(path)
     is_decomm = db.is_decommissioned(path)
 
     if target or is_decomm:
-        # It's decommissioned or redirected (which means it was decommissioned)
         record = db.get_decommission_by_path(path) or {}
         reason = record.get("reason", "Security risk — decommissioned by Lazarus platform.")
         ts = record.get("completed_at") or record.get("initiated_at") or datetime.utcnow().isoformat() + "Z"
-        
-        # Format the timestamp
+
         try:
-            # Safely parse up to the seconds (e.g., 2026-03-26T05:30:31)
             clean_ts = ts[:19]
             dt = datetime.strptime(clean_ts, "%Y-%m-%dT%H:%M:%S")
             formatted_ts = dt.strftime("%B %d, %Y - %I:%M %p UTC")
@@ -142,14 +158,14 @@ async def redirect_rule_middleware(request: Request, call_next):
     <a href="{target}">Click here if you are not redirected</a>.
   </p>
   <script>setTimeout(function(){{ window.location.href = "{target}"; }}, 4000);</script>"""
-            status_code = 200 # OK to render the redirect intercept
+            status_code = 200
         else:
             redirect_row = ""
             redirect_style = ""
             redirect_countdown = """<p style="color:#94a3b8;font-size:0.85rem;margin-top:4px;">
     Please update your bookmarks or integrations to use the new endpoint.
   </p>"""
-            status_code = 410 # Gone
+            status_code = 410
 
         html = _SAFE_PAGE_TEMPLATE.format(
             path=path,
@@ -179,6 +195,13 @@ class ExternalScanRequest(BaseModel):
     url: str
 
 
+class KongRegisterRequest(BaseModel):
+    api_id: str
+    upstream_url: str
+    path: str
+    methods: list[str]
+
+
 # ── Core Endpoints ──
 
 _RISK_COLOR = {
@@ -197,15 +220,21 @@ _METHOD_COLOR = {
 def _build_catalog_html(catalog: list) -> str:
     cards_html = ""
     for api in catalog:
-        status = (api.get("status") or api.get("risk_level") or "ACTIVE").upper()
-        bb, bf, bbd = _RISK_COLOR.get(status, ("#f8fafc", "#64748b", "#e2e8f0"))
+        # Support both old mock_data format (status/risk_level) and new csv format (lazarus_status)
+        status_raw = (
+            api.get("lazarus_status")
+            or api.get("status")
+            or api.get("risk_level")
+            or "ACTIVE"
+        ).upper()
+        bb, bf, bbd = _RISK_COLOR.get(status_raw, ("#f8fafc", "#64748b", "#e2e8f0"))
         method = api.get("method", "GET").upper()
         mc = _METHOD_COLOR.get(method, "#64748b")
         cards_html += (
-            f'<div class="api-card" data-status="{status}">'
+            f'<div class="api-card" data-status="{status_raw}">'
             f'<div class="card-top">'
             f'<span class="method-badge" style="background:{mc}18;color:{mc};border:1px solid {mc}30">{method}</span>'
-            f'<span class="status-badge" style="background:{bb};color:{bf};border:1px solid {bbd}">{status}</span>'
+            f'<span class="status-badge" style="background:{bb};color:{bf};border:1px solid {bbd}">{status_raw}</span>'
             f'</div>'
             f'<h3 class="api-name">{api.get("name", "Unnamed API")}</h3>'
             f'<code class="api-path">{api.get("path", "")}</code>'
@@ -217,9 +246,9 @@ def _build_catalog_html(catalog: list) -> str:
             f'</div></div>'
         )
     total  = len(catalog)
-    zombie = sum(1 for a in catalog if (a.get("status") or "").upper() == "ZOMBIE")
-    shadow = sum(1 for a in catalog if (a.get("status") or "").upper() == "SHADOW")
-    stale  = sum(1 for a in catalog if (a.get("status") or "").upper() == "STALE")
+    zombie = sum(1 for a in catalog if (a.get("lazarus_status") or a.get("status") or "").upper() == "ZOMBIE")
+    shadow = sum(1 for a in catalog if (a.get("lazarus_status") or a.get("status") or "").upper() == "SHADOW")
+    stale  = sum(1 for a in catalog if (a.get("lazarus_status") or a.get("status") or "").upper() == "STALE")
     return (
         "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='UTF-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/>"
@@ -303,42 +332,204 @@ def _build_catalog_html(catalog: list) -> str:
     )
 
 
-@app.get("/")
-def root_explorer():
-    """HTML API catalog — shown when browser visits localhost:8000."""
-    return HTMLResponse(content=_build_catalog_html(EXPECTED_CATALOG))
+def _synthesize_security_details(api: dict) -> tuple:
+    ls = str(api.get("lazarus_status", "active")).lower()
+    auth_exposed = api.get("auth_exposed", False)
+    reachable = api.get("reachable", True)
+    http_code = api.get("http_code")
+    
+    score = 100
+    is_https = str(api.get("url", "")).startswith("https")
+    
+    # Contextual penalties
+    if ls == "zombie":
+        score -= 40
+    elif ls == "shadow":
+        score -= 35
+    elif ls == "stale":
+        score -= 20
+
+    if not reachable:
+        score -= 15
+    if auth_exposed:
+        score -= 30
+    if not is_https:
+        score -= 25
+    if http_code and http_code >= 500:
+        score -= 15
+        
+    score = max(0, min(100, score))
+    
+    posture = {
+        "overall_score": score,
+        "authentication": {
+            "status": "fail" if auth_exposed else ("pass" if reachable else "warning"),
+            "type": "No Auth" if auth_exposed else "Unknown",
+            "details": "Responded HTTP 200 without Authorization." if auth_exposed else "Enforces auth or could not verify."
+        },
+        "encryption": {
+            "status": "pass" if is_https else "fail",
+            "protocol": "TLS" if is_https else "HTTP",
+            "details": "Using HTTPS" if is_https else "Using plaintext HTTP."
+        },
+        "rate_limiting": {
+            "status": "warning",
+            "limit": "Unknown",
+            "details": "Could not automatically verify rate limits via probe."
+        },
+        "data_exposure": {
+            "status": "warning" if auth_exposed else "pass",
+            "details": "Potential unauthenticated data exposure." if auth_exposed else "No immediate exposure detected."
+        },
+        "input_validation": {
+            "status": "fail" if http_code and http_code >= 500 else "pass",
+            "details": "Server returned 5xx error during probe." if http_code and http_code >= 500 else "No server errors during probe."
+        }
+    }
+    
+    reasoning = []
+    if ls == "zombie":
+        reasoning.append("Endpoint is unreachable or timing out consistently.")
+    if ls == "shadow":
+        reasoning.append("Endpoint was discovered in traffic but lacks documentation.")
+    if auth_exposed:
+        reasoning.append("Endpoint exposed data without proper valid API keys or tokens.")
+    if not is_https:
+        reasoning.append("Endpoint is exposed over insecure HTTP.")
+    if not reasoning:
+        reasoning.append(f"Classified as {ls.upper()} based on HTTP probe results.")
+        
+    recommendations = []
+    if not reachable or ls == "zombie":
+        recommendations.append({"action": "Decommission gateway route and remove from DNS.", "priority": "critical"})
+    if auth_exposed:
+        recommendations.append({"action": "Enforce strict JWT/API Key authentication immediately.", "priority": "critical"})
+    if not is_https:
+        recommendations.append({"action": "Migrate API traffic to HTTPS to ensure TLS encryption.", "priority": "high"})
+    if ls == "stale":
+        recommendations.append({"action": "Review endpoint usage with owners and deprecate if unused.", "priority": "medium"})
+    if not recommendations:
+        recommendations.append({"action": "Continue routine traffic monitoring and anomaly detection.", "priority": "low"})
+        
+    return posture, reasoning, recommendations
 
 
-@app.get("/api/catalog")
-def get_catalog(request: Request):
-    """Return API catalog. Serves HTML to browsers, JSON to API clients."""
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept and "application/json" not in accept:
-        return HTMLResponse(content=_build_catalog_html(EXPECTED_CATALOG))
+def _get_effective_catalog() -> list:
+    """Return catalog from MongoDB if populated, else fall back to mock_data."""
+    mongo_catalog = db.get_all_api_catalog()
+    if mongo_catalog:
+        return mongo_catalog
     return EXPECTED_CATALOG
 
 
-@app.get("/api/traffic")
-def get_traffic():
+def _get_effective_traffic(catalog: list) -> list:
+    """
+    When the DB catalog is active, synthesize a traffic list from each
+    API's traffic_30d field so the rest of the app has a consistent
+    hit_count / path shape.  Falls back to LIVE_TRAFFIC_FLOW for mock data.
+    """
+    # If the catalog has lazarus_status it came from a CSV upload
+    if catalog and catalog[0].get("lazarus_status") is not None:
+        flows = []
+        for api in catalog:
+            raw_url = api.get("url") or api.get("path") or ""
+            parsed_path = urlparse(raw_url).path if raw_url.startswith("http") else raw_url
+            flows.append({
+                "path": normalize_path(parsed_path),
+                "method": api.get("method", "GET"),
+                "hit_count": api.get("traffic_30d", 0),
+                "avg_latency": "—",
+                "last_seen": api.get("last_traffic_at"),
+            })
+        return flows
     return LIVE_TRAFFIC_FLOW
 
 
+@app.get("/")
+def root_explorer():
+    """HTML API catalog — shown when browser visits localhost:8000."""
+    return HTMLResponse(content=_build_catalog_html(_get_effective_catalog()))
+
+
+@app.get("/api/catalog")
+def get_catalog(request: Request, current_user: dict = Depends(get_current_user)):
+    """Return API catalog. Serves HTML to browsers, JSON to API clients."""
+    catalog = _get_effective_catalog()
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        return HTMLResponse(content=_build_catalog_html(catalog))
+    return catalog
+
+
+@app.get("/api/traffic")
+def get_traffic(current_user: dict = Depends(get_current_user)):
+    catalog = _get_effective_catalog()
+    return _get_effective_traffic(catalog)
+
+
 @app.get("/api/analyze")
-def get_analysis():
-    return analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+def get_analysis(current_user: dict = Depends(get_current_user)):
+    catalog = _get_effective_catalog()
+    traffic = _get_effective_traffic(catalog)
+    return analyze_api_discrepancies(catalog, traffic)
+
+
+# ── Health (public) ──
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "Lazarus API Defence Platform"}
 
 
 # ── Detail Endpoint ──
 
 @app.get("/api/detail")
-def api_detail(api_id: str = None, path: str = None):
+def api_detail(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
     if not api_id and not path:
         raise HTTPException(status_code=400, detail="Provide api_id or path query param.")
-    result = get_api_detail(api_id=api_id, path=path)
+
+    # Try DB catalog first (CSV-ingested), then fall back to mock_data
+    result = None
+    mongo_catalog = db.get_all_api_catalog()
+    if mongo_catalog:
+        for api in mongo_catalog:
+            raw_url = api.get("url") or api.get("path") or ""
+            api_path = urlparse(raw_url).path if raw_url.startswith("http") else raw_url
+            
+            if (api_id and api.get("api_id") == api_id) or (path and api_path == path):
+                traffic_list = _get_effective_traffic(mongo_catalog)
+                flow = next((f for f in traffic_list if f["path"] == api_path), None)
+                ls = str(api.get("lazarus_status", "active")).lower()
+                status_map = {"zombie": "ZOMBIE", "shadow": "SHADOW", "stale": "STALE", "active": "ACTIVE"}
+                risk_map = {"zombie": "CRITICAL", "shadow": "CRITICAL", "stale": "MEDIUM", "active": "LOW"}
+                
+                posture, reasoning, recommendations = _synthesize_security_details(api)
+                
+                result = {
+                    **api,
+                    "id": api.get("api_id"),
+                    "path": api_path,
+                    "status": status_map.get(ls, "ACTIVE"),
+                    "risk_level": risk_map.get(ls, "LOW"),
+                    "traffic": flow,
+                    "security_posture": posture,
+                    "classification": {
+                        "type": status_map.get(ls, "ACTIVE"),
+                        "label": f"{status_map.get(ls, 'ACTIVE')} API",
+                        "reasoning": reasoning,
+                        "recommendations": recommendations,
+                    },
+                    "is_in_catalog": api.get("is_documented", True),
+                    "is_decommissioned": False,
+                }
+                break
+
+    if not result:
+        result = get_api_detail(api_id=api_id, path=path)
+
     if not result:
         raise HTTPException(status_code=404, detail="API not found.")
 
-    # Enrich with decommission status from DB
     check_path = path or result.get("path")
     if check_path and db.is_decommissioned(check_path):
         result["is_decommissioned"] = True
@@ -352,26 +543,25 @@ def api_detail(api_id: str = None, path: str = None):
 # ── Defence Endpoints ──
 
 @app.post("/api/defend")
-def defend_api(req: DefendRequest):
+def defend_api(req: DefendRequest, current_user: dict = Depends(get_current_user)):
     db.save_honeypot(req.path)
     return {"status": "honeypot_deployed", "path": req.path}
 
 
 @app.get("/api/honeypots")
-def get_honeypots():
+def get_honeypots(current_user: dict = Depends(get_current_user)):
     """Return all persisted honeypot paths."""
     return db.get_all_honeypots()
 
 
 @app.get("/api/honeypots/activity")
-def get_honeypot_activity():
+def get_honeypot_activity(current_user: dict = Depends(get_current_user)):
     """Return all activity logs matching a honeypot hit."""
     return db.get_honeypot_activity()
 
 
 @app.post("/api/decommission")
-def decommission_api(req: DecommissionRequest):
-    # Check if already decommissioned
+async def decommission_api(req: DecommissionRequest, current_user: dict = Depends(get_current_user)):
     existing = db.get_decommission_by_path(req.path)
     if existing:
         return {
@@ -388,7 +578,7 @@ def decommission_api(req: DecommissionRequest):
         "status": "decommissioned",
         "initiated_at": now.isoformat() + "Z",
         "completed_at": (now.replace(second=now.second + 12)).isoformat() + "Z",
-        "operator": "admin@lazarus.bank.internal",
+        "operator": current_user.get("email", "admin@lazarus.bank.internal"),
         "approval": "Auto-approved — CRITICAL risk score below 20",
         "steps_completed": [
             {"step": 1, "action": "Traffic rerouted to fallback endpoint",
@@ -435,55 +625,73 @@ def decommission_api(req: DecommissionRequest):
         },
     }
 
-    # Save to MongoDB
     db.save_decommission(entry)
 
-    # Save redirect rule if a new safe path was provided
+    # ── Kong gateway decommission ──
+    try:
+        kong_result = await kong_client.decommission_service(req.api_id)
+    except Exception:
+        kong_result = {"error": "Kong unreachable"}
+    entry["kong_result"] = kong_result
+
     if req.redirect_to and req.redirect_to.strip():
         db.save_redirect_rule(req.path, req.redirect_to.strip())
         entry["redirect_to"] = req.redirect_to.strip()
 
-    # Send email notification
     email_result = send_decommission_email(entry)
-    # Update the notification status for daxketkar10@gmail.com
     entry["stakeholder_notifications"][0]["status"] = email_result["status"]
     if email_result.get("error"):
         entry["stakeholder_notifications"][0]["error"] = email_result["error"]
-    # Re-save with updated email status
     db.save_decommission(entry)
 
     entry["email_sent"] = email_result
     return entry
 
 
+# ── Kong Registration Endpoint ──
+
+@app.post("/api/kong/register")
+async def kong_register(req: KongRegisterRequest, current_user: dict = Depends(get_current_user)):
+    """Register a service and route in Kong gateway."""
+    svc_result = await kong_client.register_service(req.api_id, req.upstream_url)
+    route_result = await kong_client.register_route(req.api_id, req.path, req.methods)
+    return {
+        "status": "registered",
+        "api_id": req.api_id,
+        "service": svc_result,
+        "route": route_result,
+    }
+
+
 # ── Monitoring Endpoint ──
 
 @app.get("/api/monitor")
-def get_monitoring():
+def get_monitoring(current_user: dict = Depends(get_current_user)):
     return MONITORING_DATA
 
 
 @app.get("/api/decommission-log")
-def get_decommission_log():
+def get_decommission_log(current_user: dict = Depends(get_current_user)):
     """Return all decommission records from MongoDB."""
     return db.get_all_decommissions()
 
 
 @app.get("/api/activity-log")
-def get_activity_log():
+def get_activity_log(current_user: dict = Depends(get_current_user)):
     """Return recent activity log from MongoDB."""
     return db.get_activity_log()
 
 
 @app.get("/api/redirect-rules")
-def get_redirect_rules():
+def get_redirect_rules(current_user: dict = Depends(get_current_user)):
     """Return all active redirect rules from MongoDB."""
     return db.get_all_redirect_rules()
+
 
 # ── Mock Target Endpoints (for Redirect targets) ──
 
 @app.get("/api/safe-v3")
-def get_safe_v3():
+def get_safe_v3(current_user: dict = Depends(get_current_user)):
     return {
         "status": "success",
         "message": "Welcome to the new, safe API v3 endpoint.",
@@ -492,13 +700,6 @@ def get_safe_v3():
             "encryption": "aes-256-gcm",
             "auth_required": True
         }
-    }
-
-@app.get("/api/catalog")
-def get_catalog():
-    return {
-        "status": "success",
-        "message": "API Catalog is active and fully documented."
     }
 
 
@@ -552,7 +753,7 @@ def _compute_overall_risk(discovered: list, missing_headers: list, open_cors: bo
 
 
 @app.post("/api/scan-external")
-def scan_external(req: ExternalScanRequest):
+def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_current_user)):
     """External URL Scanner — probe any public URL for security misconfigurations."""
     url = req.url.strip()
     if not url:
@@ -563,7 +764,6 @@ def scan_external(req: ExternalScanRequest):
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     uses_https = parsed.scheme.lower() == "https"
 
-    # ── Step 1: Fetch the target URL ──
     try:
         t_start = time.monotonic()
         resp = req_lib.get(url, timeout=10, allow_redirects=True)
@@ -588,17 +788,9 @@ def scan_external(req: ExternalScanRequest):
             "summary": f"The target URL could not be reached. Error: {exc}",
         }
 
-    # ── Step 2: Security header checks ──
     headers_lower = {k.lower(): v for k, v in headers.items()}
-    missing_security_headers = [
-        h for h in _SECURITY_HEADERS
-        if h.lower() not in headers_lower
-    ]
-
-    # ── Step 3: CORS check ──
+    missing_security_headers = [h for h in _SECURITY_HEADERS if h.lower() not in headers_lower]
     open_cors = headers_lower.get("access-control-allow-origin", "") == "*"
-
-    # ── Step 4: Server header tech leak ──
     server_val = headers_lower.get("server", "")
     server_header_leak = None
     if server_val:
@@ -606,10 +798,9 @@ def scan_external(req: ExternalScanRequest):
         if any(kw in sl for kw in _SERVER_TECH_KEYWORDS) or len(server_val) > 3:
             server_header_leak = server_val
 
-    # ── Step 5: Probe shadow paths ──
     discovered_endpoints = []
-    for path in _SHADOW_PATHS:
-        probe_url = base_url + path
+    for shadow_path in _SHADOW_PATHS:
+        probe_url = base_url + shadow_path
         try:
             t0 = time.monotonic()
             pr = req_lib.get(
@@ -621,21 +812,19 @@ def scan_external(req: ExternalScanRequest):
             if pr.status_code not in (404, 410):
                 classification = _classify_endpoint(pr.status_code)
                 discovered_endpoints.append({
-                    "path": path,
+                    "path": normalize_path(shadow_path),
                     "status_code": pr.status_code,
                     "response_time_ms": probe_time,
                     "classification": classification["classification"],
                     "severity": classification["severity"],
                 })
         except Exception:
-            pass  # Timed-out or refused — not an exposed endpoint
+            pass
 
-    # ── Step 6: Overall risk ──
     overall_risk = _compute_overall_risk(
         discovered_endpoints, missing_security_headers, open_cors, server_header_leak
     )
 
-    # ── Step 7: Plain-English summary ──
     issues = []
     if missing_security_headers:
         issues.append(f"{len(missing_security_headers)} security headers are missing")
@@ -674,7 +863,7 @@ def scan_external(req: ExternalScanRequest):
 
 
 @app.get("/api/compliance-report")
-def get_compliance_report(api_id: str = None, path: str = None):
+def get_compliance_report(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
     """Generate a compliance report for a decommissioned API."""
     logs = db.get_all_decommissions()
     entry = None
@@ -737,19 +926,36 @@ class AiQueryRequest(BaseModel):
 class AiChatRequest(BaseModel):
     """Request model for the OpenRouter-powered chat endpoint."""
     question: str
-    history: list = []   # list of {"role": "user"|"assistant", "content": "..."}
+    history: list = []
 
 
 def _gather_all_api_details():
     """Gather full detail for every known API (catalog + shadow)."""
     all_details = []
-    for api in EXPECTED_CATALOG:
-        detail = get_api_detail(api_id=api["id"])
-        if detail:
-            all_details.append(detail)
-    # Shadow APIs from traffic
-    catalog_paths = {api["path"] for api in EXPECTED_CATALOG}
-    for flow in LIVE_TRAFFIC_FLOW:
+    catalog = _get_effective_catalog()
+    traffic = _get_effective_traffic(catalog)
+    for api in catalog:
+        api_id = api.get("id") or api.get("api_id")
+        detail = get_api_detail(api_id=api_id)
+        if not detail:
+            # DB catalog entry — build a minimal detail dict inline
+            ls = api.get("lazarus_status", "active")
+            status_map = {"zombie": "ZOMBIE", "shadow": "SHADOW", "stale": "STALE", "active": "ACTIVE"}
+            risk_map = {"zombie": "CRITICAL", "shadow": "CRITICAL", "stale": "MEDIUM", "active": "LOW"}
+            flow = next((f for f in traffic if f["path"] == api.get("path")), None)
+            detail = {
+                **api,
+                "id": api.get("api_id"),
+                "status": status_map.get(ls, "ACTIVE"),
+                "risk_level": risk_map.get(ls, "LOW"),
+                "traffic": flow,
+                "security_posture": {"overall_score": max(0, 100 - api.get("risk_score", 0)), "risk_level": risk_map.get(ls, "LOW")},
+                "classification": {"type": status_map.get(ls, "ACTIVE"), "label": f"{ls.capitalize()} API", "reasoning": [], "recommendations": []},
+                "is_in_catalog": api.get("is_documented", True),
+            }
+        all_details.append(detail)
+    catalog_paths = {api.get("path") for api in catalog}
+    for flow in traffic:
         if flow["path"] not in catalog_paths:
             detail = get_api_detail(path=flow["path"])
             if detail:
@@ -758,7 +964,7 @@ def _gather_all_api_details():
 
 
 @app.post("/api/ai/explain-risk")
-def ai_explain_risk(req: AiApiRequest):
+def ai_explain_risk(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """AI Risk Explanation — plain-English risk translation for non-technical users."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
@@ -770,33 +976,25 @@ def ai_explain_risk(req: AiApiRequest):
 
 
 @app.post("/api/ai/query")
-def ai_query(req: AiQueryRequest):
+def ai_query(req: AiQueryRequest, current_user: dict = Depends(get_current_user)):
     """Natural Language Security Query — ask questions in plain English (local engine)."""
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Provide a question.")
     all_details = _gather_all_api_details()
-    analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+    catalog = _get_effective_catalog()
+    analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     result = ai_engine.query_security(req.question, all_details, analysis)
     return {"question": req.question, "answer": result}
 
 
 @app.post("/api/ai/chat")
-def ai_chat(req: AiChatRequest):
-    """
-    OpenRouter / Qwen-powered conversational AI chat.
-
-    This is the trial endpoint that replaces the local keyword-matching engine
-    with a real LLM for free-text queries. The entire API security context is
-    injected into the system prompt so the model can answer intelligently.
-
-    Configure in .env:
-        OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxx
-        OPENROUTER_MODEL=qwen/qwen3-235b-a22b:free
-    """
+def ai_chat(req: AiChatRequest, current_user: dict = Depends(get_current_user)):
+    """OpenRouter / Qwen-powered conversational AI chat."""
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="Provide a question.")
     all_details = _gather_all_api_details()
-    analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+    catalog = _get_effective_catalog()
+    analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     answer = openrouter_engine.chat_with_openrouter(
         question=req.question,
         api_data=all_details,
@@ -807,7 +1005,7 @@ def ai_chat(req: AiChatRequest):
 
 
 @app.post("/api/ai/generate-report")
-def ai_generate_report(req: AiApiRequest):
+def ai_generate_report(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """AI Security Report Generator — comprehensive compliance report."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
@@ -819,7 +1017,7 @@ def ai_generate_report(req: AiApiRequest):
 
 
 @app.post("/api/ai/attack-simulation")
-def ai_attack_simulation(req: AiApiRequest):
+def ai_attack_simulation(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """Attack Scenario Simulator — hypothetical attack vectors."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
@@ -831,10 +1029,11 @@ def ai_attack_simulation(req: AiApiRequest):
 
 
 @app.get("/api/ai/security-summary")
-def ai_security_summary():
+def ai_security_summary(current_user: dict = Depends(get_current_user)):
     """AI Security Summary — executive overview for dashboard."""
     all_details = _gather_all_api_details()
-    analysis = analyze_api_discrepancies(EXPECTED_CATALOG, LIVE_TRAFFIC_FLOW)
+    catalog = _get_effective_catalog()
+    analysis = analyze_api_discrepancies(catalog, _get_effective_traffic(catalog))
     result = ai_engine.security_summary(all_details, analysis)
     return {"summary": result}
 
@@ -845,6 +1044,7 @@ if __name__ == "__main__":
     print(f"   MongoDB: {'✅ Connected' if db.is_connected() else '❌ Not connected'}")
     print(f"   Persisted decommissions: {len(db.get_all_decommissions())}")
     print(f"   Persisted honeypots: {len(db.get_all_honeypots())}")
-    print(f"   AI Engine: ✅ Local Engine Active")
+    print(f"   Catalog APIs in MongoDB: {db.get_api_catalog_count()}")
+    print(f"   AI Engine: ✅ Local + OpenRouter Active")
     print()
     uvicorn.run(app, host="0.0.0.0", port=8000)

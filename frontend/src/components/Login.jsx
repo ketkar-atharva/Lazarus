@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { ShieldAlert, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { ShieldAlert, Eye, EyeOff, ArrowRight, AlertCircle } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import api from '../api';
 import '../styles/Auth.css';
 
-export default function Login({ onLoginSuccess, onSwitchToSignup }) {
+export default function Login({ onSwitchToSignup }) {
+  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,24 +18,27 @@ export default function Login({ onLoginSuccess, onSwitchToSignup }) {
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+      // OAuth2PasswordRequestForm requires application/x-www-form-urlencoded
+      const params = new URLSearchParams();
+      params.append('username', email);
+      params.append('password', password);
+
+      const res = await api.post('/auth/login', params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || data.message || 'Invalid email or password');
-      }
-
-      localStorage.setItem('token', data.token);
-      localStorage.setItem('user', JSON.stringify(data.user));
-      onLoginSuccess(data.user);
+      login(res.data.access_token, res.data.user);
     } catch (err) {
-      console.error('Login error:', err);
-      setError(err.message || 'Login failed');
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 401) {
+        setError('Invalid credentials. Please check your email and password.');
+      } else {
+        setError(
+          typeof detail === 'object'
+            ? detail.detail || 'Login failed.'
+            : detail || 'Login failed.'
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -41,7 +47,7 @@ export default function Login({ onLoginSuccess, onSwitchToSignup }) {
   return (
     <div className="auth-container">
       <div className="auth-card">
-        {/* Logo Section */}
+        {/* Logo */}
         <div className="auth-logo">
           <div className="auth-logo-icon">
             <ShieldAlert className="w-8 h-8" />
@@ -52,87 +58,75 @@ export default function Login({ onLoginSuccess, onSwitchToSignup }) {
           </div>
         </div>
 
-        {/* Form Section */}
         <div className="auth-form-wrapper">
           <h2 className="auth-heading">Welcome Back</h2>
-          <p className="auth-subheading">
-            Sign in to your account to continue
-          </p>
+          <p className="auth-subheading">Sign in with your bank credentials to continue</p>
 
           <form onSubmit={handleLogin} className="auth-form">
-            {/* Email Field */}
             <div className="form-group">
-              <label htmlFor="email" className="form-label">
-                Email Address
-              </label>
+              <label htmlFor="login-email" className="form-label">Email Address</label>
               <input
-                id="email"
+                id="login-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="you@lazarusbank.com"
                 className="form-input"
                 required
+                autoComplete="email"
               />
             </div>
 
-            {/* Password Field */}
             <div className="form-group">
-              <label htmlFor="password" className="form-label">
-                Password
-              </label>
+              <label htmlFor="login-password" className="form-label">Password</label>
               <div className="password-input-wrapper">
                 <input
-                  id="password"
+                  id="login-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
                   className="form-input"
                   required
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="password-toggle"
+                  tabIndex={-1}
                 >
-                  {showPassword ? (
-                    <EyeOff className="w-4 h-4" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
 
-            {/* Error Message */}
-            {error && <div className="error-message">{error}</div>}
+            {error && (
+              <div className="error-message">
+                <AlertCircle className="w-4 h-4" />
+                {error}
+              </div>
+            )}
 
-            {/* Submit Button */}
             <button
+              id="login-submit"
               type="submit"
               disabled={loading}
               className="auth-button"
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? 'Signing in…' : 'Sign In'}
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
 
-          {/* Signup Link */}
           <p className="auth-footer">
             Don't have an account?{' '}
-            <button
-              onClick={onSwitchToSignup}
-              className="auth-link"
-            >
+            <button onClick={onSwitchToSignup} className="auth-link" id="switch-to-signup">
               Create one
             </button>
           </p>
         </div>
       </div>
-
-      {/* Background decoration */}
       <div className="auth-background-shape" />
     </div>
   );

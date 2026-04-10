@@ -1,6 +1,12 @@
 # mock_data.py — Lazarus: Zombie API Discovery & Defence Platform
 
 from datetime import datetime
+from urllib.parse import urlparse
+from path_utils import normalize_path
+
+def _get_api_path(api):
+    raw = api.get("url") or api.get("path") or ""
+    return urlparse(raw).path if raw.startswith("http") else raw
 
 # ═══════════════════════════════════════════════════════════════
 # EXPECTED API CATALOG (from OpenAPI / Swagger docs)
@@ -431,25 +437,42 @@ DECOMMISSION_LOG = []
 # ANALYSIS FUNCTIONS
 # ═══════════════════════════════════════════════════════════════
 def analyze_api_discrepancies(catalog, traffic):
-    catalog_paths = {api["path"]: api for api in catalog}
-    traffic_paths = {flow["path"]: flow for flow in traffic}
+    # Normalize before building lookup dicts so /api/v1/ and /api/v1 match
+    catalog_paths = {normalize_path(_get_api_path(api)): api for api in catalog if _get_api_path(api)}
+    traffic_paths = {normalize_path(flow["path"]): flow for flow in traffic}
 
     discrepancies = {"shadow_apis": [], "zombie_apis": [], "stale_apis": []}
 
     for flow in traffic:
-        if flow["path"] not in catalog_paths:
+        if normalize_path(flow["path"]) not in catalog_paths:
             discrepancies["shadow_apis"].append(flow["path"])
 
     for api in catalog:
-        path = api["path"]
-        flow = traffic_paths.get(path)
-        if flow:
-            if api["is_deprecated"] and flow["hit_count"] > 0:
+        path     = _get_api_path(api)
+        if not path:
+            continue
+        norm     = normalize_path(path)
+        flow     = traffic_paths.get(norm)
+
+        # Support both mock format (is_deprecated) and CSV/DB format (lazarus_status)
+        lazarus_status = api.get("lazarus_status", "").lower()
+        is_deprecated  = api.get("is_deprecated", False)
+
+        if lazarus_status:
+            # CSV/DB catalog — lazarus_status already computed during ingestion
+            if lazarus_status == "zombie":
                 discrepancies["zombie_apis"].append(path)
-            if not api["is_deprecated"] and flow["hit_count"] == 0:
+            elif lazarus_status == "stale":
                 discrepancies["stale_apis"].append(path)
+            elif lazarus_status == "shadow":
+                discrepancies["shadow_apis"].append(path)
+            # "active" APIs are not a discrepancy
         else:
-            if not api["is_deprecated"]:
+            # Mock data — derive from is_deprecated + live traffic hit counts
+            hit_count = flow["hit_count"] if flow else 0
+            if is_deprecated and hit_count > 0:
+                discrepancies["zombie_apis"].append(path)
+            elif not is_deprecated and hit_count == 0:
                 discrepancies["stale_apis"].append(path)
 
     return discrepancies

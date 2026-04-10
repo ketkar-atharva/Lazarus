@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import api from '../api';
 import {
   Globe,
   Search,
@@ -18,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 /* ── Risk badge colours ── */
 const RISK_STYLE = {
@@ -183,7 +183,7 @@ export default function ExternalScanner() {
     setResult(null);
     setError(null);
     try {
-      const res = await axios.post(`${API_BASE}/api/scan-external`, { url: trimmed });
+      const res = await api.post('/api/scan-external', { url: trimmed });
       setResult(res.data);
     } catch (err) {
       setError(err?.response?.data?.detail || 'Scan failed. Is the Lazarus backend running?');

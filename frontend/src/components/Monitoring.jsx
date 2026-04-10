@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
+import api from '../api';
 import {
   Activity,
   Shield,
@@ -21,7 +21,7 @@ import {
   Lock,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 /* Formats seconds into "Xm Ys" */
 const fmtElapsed = (s) => {
@@ -44,7 +44,7 @@ export default function Monitoring() {
   /* Fetch monitoring data */
   const fetchData = useCallback(async () => {
     try {
-      const res = await axios.get(`${API_BASE}/api/monitor`);
+      const res = await api.get('/api/monitor');
       setData(res.data);
       setLastRefresh(new Date());
     } catch (err) {

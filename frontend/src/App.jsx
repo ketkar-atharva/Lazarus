@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
 import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import api, { setupApiInterceptors } from './api';
 import Sidebar from './components/Sidebar';
 import DashboardHome from './components/DashboardHome';
 import Dashboard from './components/Dashboard';
@@ -10,59 +11,89 @@ import Reports from './components/Reports';
 import AiChat from './components/AiChat';
 import AiInsights from './components/AiInsights';
 import ExternalScanner from './components/ExternalScanner';
-import Honeypots from './components/Honeypots';
+import CsvUpload from './components/CsvUpload';
+import Login from './components/Login';
+import Signup from './components/Signup';
 import './App.css';
-
-const API_BASE = 'http://localhost:8000';
 
 const PAGE_LABELS = {
   dashboard: 'Dashboard',
-  inventory: 'Dashboard',
+  inventory:  'API Inventory',
+  catalog:    'API Catalog',
   monitoring: 'Monitoring',
-  reports: 'Reports',
-  detail: 'API Detail',
-  scanner: 'External Scanner',
-  ai: 'AI Assistant',
-  honeypots: 'Honeypot Dashboard',
+  reports:    'Reports',
+  detail:     'API Detail',
+  scanner:    'External Scanner',
+  ai:         'AI Assistant',
 };
 
-export default function App() {
+// ── Inner App (has access to AuthContext) ──
+function AppInner() {
+  const { isAuthenticated, token, logout } = useAuth();
+  const [authView, setAuthView] = useState('login'); // 'login' | 'signup'
+
+  // Use a ref to always provide the freshest token to the axios interceptor
+  // bypassing the race condition where MainShell fetches before useEffect fires
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+
+  // Wire up axios interceptors once we have auth context
+  useEffect(() => {
+    setupApiInterceptors({ getToken: () => tokenRef.current, logout });
+  }, [logout]);
+
+  // Listen for 401 events from the interceptor
+  useEffect(() => {
+    const handler = () => logout();
+    window.addEventListener('lazarus:unauthorized', handler);
+    return () => window.removeEventListener('lazarus:unauthorized', handler);
+  }, [logout]);
+
+  if (!isAuthenticated) {
+    return authView === 'login'
+      ? <Login onSwitchToSignup={() => setAuthView('signup')} />
+      : <Signup onSwitchToLogin={() => setAuthView('login')} />;
+  }
+
+  return <MainShell />;
+}
+
+// ── Main App Shell (authenticated) ──
+function MainShell() {
   const [currentPage, setCurrentPage] = useState('dashboard');
   const [catalog, setCatalog] = useState([]);
   const [traffic, setTraffic] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [deployedPaths, setDeployedPaths] = useState(new Set());
   const [selectedApi, setSelectedApi] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);
 
   /* ── Navigation History ── */
   const [history, setHistory] = useState([{ page: 'dashboard', api: null }]);
   const [historyIndex, setHistoryIndex] = useState(0);
-  const isNavRef = useRef(false); // flag to skip pushing on back/forward
+  const isNavRef = useRef(false);
 
-  const navigateTo = useCallback((page, api = null) => {
+  const navigateTo = useCallback((page, apiObj = null) => {
     setCurrentPage(page);
-    setSelectedApi(api);
-
+    setSelectedApi(apiObj);
     if (!isNavRef.current) {
       setHistory(prev => {
         const trimmed = prev.slice(0, historyIndex + 1);
-        return [...trimmed, { page, api }];
+        return [...trimmed, { page, api: apiObj }];
       });
       setHistoryIndex(prev => prev + 1);
     }
     isNavRef.current = false;
   }, [historyIndex]);
 
-  const canGoBack = historyIndex > 0;
+  const canGoBack    = historyIndex > 0;
   const canGoForward = historyIndex < history.length - 1;
 
   const goBack = useCallback(() => {
     if (!canGoBack) return;
     const newIdx = historyIndex - 1;
-    const entry = history[newIdx];
+    const entry  = history[newIdx];
     isNavRef.current = true;
     setHistoryIndex(newIdx);
     setCurrentPage(entry.page);
@@ -72,29 +103,24 @@ export default function App() {
   const goForward = useCallback(() => {
     if (!canGoForward) return;
     const newIdx = historyIndex + 1;
-    const entry = history[newIdx];
+    const entry  = history[newIdx];
     isNavRef.current = true;
     setHistoryIndex(newIdx);
     setCurrentPage(entry.page);
     setSelectedApi(entry.api);
   }, [canGoForward, historyIndex, history]);
 
-  /* ── Data Fetching ── */
+  /* ── Data Fetching (uses shared api instance with auth header) ── */
   const fetchData = useCallback(async (isInitial = false) => {
     try {
-      const [catRes, trafRes, analyzeRes, honeypotRes] = await Promise.all([
-        axios.get(`${API_BASE}/api/catalog`),
-        axios.get(`${API_BASE}/api/traffic`),
-        axios.get(`${API_BASE}/api/analyze`),
-        axios.get(`${API_BASE}/api/honeypots`).catch(() => ({ data: [] })),
+      const [catRes, trafRes, analyzeRes] = await Promise.all([
+        api.get('/api/catalog'),
+        api.get('/api/traffic'),
+        api.get('/api/analyze'),
       ]);
       setCatalog(catRes.data);
       setTraffic(trafRes.data);
       setAnalysis(analyzeRes.data);
-      // Load persisted honeypots from MongoDB
-      if (honeypotRes.data && honeypotRes.data.length > 0) {
-        setDeployedPaths(new Set(honeypotRes.data));
-      }
     } catch (err) {
       if (isInitial) setError('Unable to reach the Lazarus backend. Ensure FastAPI is running on port 8000.');
       console.error(err);
@@ -103,65 +129,57 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchData(true);
-  }, [fetchData]);
+  useEffect(() => { fetchData(true); }, [fetchData]);
 
-  const handleDeploy = useCallback(async (path) => {
-    try {
-      await axios.post(`${API_BASE}/api/defend`, { path });
-      await new Promise(r => setTimeout(r, 600));
-      setDeployedPaths(p => new Set(p).add(path));
-    } catch (err) {
-      console.error('Deploy failed:', err);
-    }
-  }, []);
+
 
   const handleViewApi = useCallback((id, path) => {
     navigateTo('detail', { id, path });
   }, [navigateTo]);
 
-  const handleBackToDashboard = useCallback(() => {
-    navigateTo('dashboard', null);
-  }, [navigateTo]);
-
-  const handleNavigate = useCallback((page) => {
-    navigateTo(page, null);
-  }, [navigateTo]);
+  const handleBackToDashboard = useCallback(() => navigateTo('dashboard', null), [navigateTo]);
+  const handleNavigate = useCallback((page) => navigateTo(page, null), [navigateTo]);
 
   /* ── Compute counts for sidebar ── */
   const catalogPaths = new Set(catalog.map(a => a.path));
   let shadowCount = 0, zombieCount = 0, staleCount = 0, activeCount = 0;
   catalog.forEach(api => {
-    const flow = traffic.find(t => t.path === api.path);
-    if (api.is_deprecated && flow && flow.hit_count > 0) zombieCount++;
-    else if (!flow || flow.hit_count === 0) staleCount++;
-    else activeCount++;
+    // Support both mock_data format (is_deprecated) and csv format (lazarus_status)
+    const lazStatus = api.lazarus_status;
+    if (lazStatus) {
+      if (lazStatus === 'zombie')  zombieCount++;
+      else if (lazStatus === 'shadow') shadowCount++;
+      else if (lazStatus === 'stale')  staleCount++;
+      else activeCount++;
+    } else {
+      const flow = traffic.find(t => t.path === api.path);
+      if (api.is_deprecated && flow && flow.hit_count > 0) zombieCount++;
+      else if (!flow || flow.hit_count === 0) staleCount++;
+      else activeCount++;
+    }
   });
   traffic.forEach(flow => {
     if (!catalogPaths.has(flow.path)) shadowCount++;
   });
 
   const apiCounts = {
-    total: catalog.length + shadowCount,
+    total:  catalog.length + shadowCount,
     shadow: shadowCount,
     zombie: zombieCount,
-    stale: staleCount,
+    stale:  staleCount,
     active: activeCount,
   };
 
-  /* Loading */
   if (loading) {
     return (
       <div className="app-loading">
         <div className="loading-spinner" />
         <p className="loading-title">Lazarus</p>
-        <p className="loading-subtitle">Initializing API scanner...</p>
+        <p className="loading-subtitle">Initializing API scanner…</p>
       </div>
     );
   }
 
-  /* Error */
   if (error) {
     return (
       <div className="app-error">
@@ -172,7 +190,6 @@ export default function App() {
     );
   }
 
-  /* Render current page */
   const renderPage = () => {
     switch (currentPage) {
       case 'detail':
@@ -183,16 +200,11 @@ export default function App() {
             onBack={handleBackToDashboard}
           />
         );
-      case 'monitoring':
-        return <Monitoring />;
-      case 'reports':
-        return <Reports />;
-      case 'scanner':
-        return <ExternalScanner />;
-      case 'ai':
-        return <AiInsights onOpenChat={() => setChatOpen(true)} />;
-      case 'honeypots':
-        return <Honeypots />;
+      case 'monitoring': return <Monitoring />;
+      case 'reports':    return <Reports />;
+      case 'scanner':    return <ExternalScanner />;
+      case 'ai':         return <AiInsights onOpenChat={() => setChatOpen(true)} />;
+      case 'catalog':    return <CsvUpload />;
       case 'inventory':
         return (
           <Dashboard
@@ -200,8 +212,6 @@ export default function App() {
             traffic={traffic}
             analysis={analysis}
             onViewApi={handleViewApi}
-            onDeploy={handleDeploy}
-            deployedPaths={deployedPaths}
           />
         );
       case 'dashboard':
@@ -213,14 +223,12 @@ export default function App() {
             analysis={analysis}
             onViewApi={handleViewApi}
             onNavigate={navigateTo}
-            deployedPaths={deployedPaths}
             onOpenChat={() => setChatOpen(true)}
           />
         );
     }
   };
 
-  /* Breadcrumb label */
   const currentLabel = PAGE_LABELS[currentPage] || 'Dashboard';
 
   return (
@@ -269,7 +277,7 @@ export default function App() {
         {renderPage()}
       </main>
 
-      {/* Floating AI Chat Toggle Button */}
+      {/* Floating AI Chat Toggle */}
       <button
         className="ai-chat-fab"
         onClick={() => setChatOpen(true)}
@@ -286,5 +294,14 @@ export default function App() {
         apiContext={selectedApi}
       />
     </div>
+  );
+}
+
+// ── Root export — wrap everything in AuthProvider ──
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
   );
 }

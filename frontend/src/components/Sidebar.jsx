@@ -5,23 +5,27 @@ import {
   Activity,
   FileText,
   Search,
-  Bell,
-  ChevronRight,
   Sparkles,
   Crosshair,
+  Upload,
+  LogOut,
+  User,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 const navItems = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'inventory', label: 'API Inventory', icon: Server },
-  { id: 'monitoring', label: 'Monitoring', icon: Activity },
-  { id: 'honeypots', label: 'Honeypots', icon: Crosshair },
-  { id: 'reports', label: 'Reports', icon: FileText },
-  { id: 'scanner', label: 'External Scanner', icon: Search },
-  { id: 'ai', label: 'AI Assistant', icon: Sparkles },
+  { id: 'dashboard', label: 'Dashboard',        icon: LayoutDashboard },
+  { id: 'inventory', label: 'API Inventory',    icon: Server           },
+  { id: 'catalog',   label: 'API Catalog',      icon: Upload           },
+  { id: 'monitoring',label: 'Monitoring',        icon: Activity         },
+  { id: 'reports',   label: 'Reports',           icon: FileText         },
+  { id: 'scanner',   label: 'External Scanner',  icon: Search           },
+  { id: 'ai',        label: 'AI Assistant',      icon: Sparkles         },
 ];
 
 export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
+  const { user, logout } = useAuth();
+
   return (
     <aside className="sidebar">
       {/* Logo */}
@@ -58,6 +62,9 @@ export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
               )}
               {item.id === 'ai' && (
                 <span className="sidebar-badge ai-badge">AI</span>
+              )}
+              {item.id === 'catalog' && (
+                <span className="sidebar-badge" style={{ background: 'rgba(167,139,250,0.15)', color: '#a78bfa' }}>CSV</span>
               )}
             </button>
           );
@@ -96,7 +103,31 @@ export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
           <span className="sidebar-scan-dot" />
           <span>Scanner Active</span>
         </div>
-        <p className="sidebar-version">Lazarus v2.0</p>
+
+        {/* User info + logout */}
+        {user && (
+          <div className="sidebar-user">
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-avatar">
+                <User className="w-3.5 h-3.5" />
+              </div>
+              <div className="sidebar-user-text">
+                <span className="sidebar-user-name">{user.full_name || user.email}</span>
+                <span className="sidebar-user-dept">{user.department || user.employee_id || ''}</span>
+              </div>
+            </div>
+            <button
+              className="sidebar-logout-btn"
+              onClick={logout}
+              title="Sign out"
+              id="sidebar-logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        <p className="sidebar-version">Lazarus v2.1</p>
       </div>
     </aside>
   );

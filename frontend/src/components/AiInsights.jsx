@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
 import ReactMarkdown from 'react-markdown';
 import {
   Sparkles,
@@ -17,7 +17,7 @@ import {
   MessageSquare,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 const PRESET_QUERIES = [
   { label: 'Which APIs have no authentication?', icon: Shield },
@@ -39,7 +39,7 @@ export default function AiInsights({ onOpenChat }) {
   useEffect(() => {
     (async () => {
       try {
-        const res = await axios.get(`${API_BASE}/api/ai/security-summary`);
+        const res = await api.get('/api/ai/security-summary');
         setSummary(res.data.summary);
       } catch (err) {
         setSummary('⚠ Could not generate AI summary. Ensure the backend is running on port 8000.');
@@ -54,7 +54,7 @@ export default function AiInsights({ onOpenChat }) {
     setQueryLoading(true);
     setQueryResult(null);
     try {
-      const res = await axios.post(`${API_BASE}/api/ai/query`, { question });
+      const res = await api.post('/api/ai/query', { question });
       setQueryResult(res.data.answer);
     } catch (err) {
       const detail = err.response?.data?.detail || 'AI query failed.';
@@ -97,7 +97,7 @@ export default function AiInsights({ onOpenChat }) {
             className="ai-refresh-btn"
             onClick={() => {
               setSummaryLoading(true);
-              axios.get(`${API_BASE}/api/ai/security-summary`)
+              api.get('/api/ai/security-summary')
                 .then(res => setSummary(res.data.summary))
                 .catch(() => setSummary('⚠ Failed to refresh.'))
                 .finally(() => setSummaryLoading(false));

@@ -1,12 +1,12 @@
 """
-Database module — MongoDB persistence for Lazarus.
+database.py — MongoDB persistence for Lazarus.
 Connection: mongodb://127.0.0.1:27017/lazarus
 """
 
 from pymongo import MongoClient
 from datetime import datetime
 
-MONGO_URI = "mongodb+srv://atharvaketkar13_db_user:sudayPp8BSEzzRq1@clusterlazarus.gocznfd.mongodb.net/?appName=ClusterLazarus"
+MONGO_URI = "mongodb://127.0.0.1:27017/lazarus"
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
 db = client["lazarus"]
@@ -16,6 +16,8 @@ decommissions = db["decommissions"]
 honeypots = db["honeypots"]
 activity_log = db["activity_log"]
 redirect_rules = db["redirect_rules"]
+api_catalog = db["api_catalog"]
+users = db["users"]
 
 
 # ── Decommission Operations ──
@@ -152,6 +154,73 @@ def get_all_redirect_rules() -> list:
         return list(redirect_rules.find({}, {"_id": 0}))
     except Exception:
         return []
+
+
+# ── API Catalog Operations ──
+
+def upsert_api_catalog(doc: dict):
+    """Upsert an API record into the api_catalog collection keyed on api_id."""
+    try:
+        api_catalog.replace_one(
+            {"api_id": doc["api_id"]},
+            doc,
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[DB] Failed to upsert api_catalog: {e}")
+
+
+def get_all_api_catalog() -> list:
+    """Return all APIs from the api_catalog collection (excluding MongoDB _id)."""
+    try:
+        return list(api_catalog.find({}, {"_id": 0}))
+    except Exception:
+        return []
+
+
+def get_api_catalog_by_id(api_id: str) -> dict | None:
+    """Return a single API record by api_id."""
+    try:
+        return api_catalog.find_one({"api_id": api_id}, {"_id": 0})
+    except Exception:
+        return None
+
+
+def get_api_catalog_count() -> int:
+    """Return the number of documents in api_catalog."""
+    try:
+        return api_catalog.count_documents({})
+    except Exception:
+        return 0
+
+
+# ── User Operations ──
+
+def create_user(user_doc: dict):
+    """Insert a new user document."""
+    try:
+        users.insert_one(user_doc)
+    except Exception as e:
+        raise Exception(f"Failed to create user: {e}")
+
+
+def get_user_by_email(email: str) -> dict | None:
+    """Return a user document by email."""
+    try:
+        return users.find_one({"email": email}, {"_id": 0})
+    except Exception:
+        return None
+
+
+def update_user_last_login(email: str):
+    """Update last_login timestamp for a user."""
+    try:
+        users.update_one(
+            {"email": email},
+            {"$set": {"last_login": datetime.utcnow().isoformat() + "Z"}},
+        )
+    except Exception as e:
+        print(f"[DB] Failed to update last_login: {e}")
 
 
 # ── Health Check ──

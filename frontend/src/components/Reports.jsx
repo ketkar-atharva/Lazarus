@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
 import {
   FileText,
   CheckCircle2,
@@ -20,7 +20,7 @@ import {
   Shuffle,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+
 
 export default function Reports() {
   const [logs, setLogs] = useState([]);
@@ -32,8 +32,8 @@ export default function Reports() {
     (async () => {
       try {
         const [logRes, rrRes] = await Promise.all([
-          axios.get(`${API_BASE}/api/decommission-log`),
-          axios.get(`${API_BASE}/api/redirect-rules`).catch(() => ({ data: [] })),
+          api.get('/api/decommission-log'),
+          api.get('/api/redirect-rules').catch(() => ({ data: [] })),
         ]);
         setLogs(logRes.data);
         if (logRes.data.length > 0) setSelectedLog(logRes.data[0]);
