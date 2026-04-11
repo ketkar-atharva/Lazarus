@@ -323,7 +323,7 @@ export default function Reports() {
               <span className="card-count">{notifs.length} sent</span>
             </div>
             <div className="notif-list">
-              {notifs.map((n, i) => (
+              {notifs.filter(n => n!== "AWS API Gateway" && n !== "#security-alerts" && n !== "compliance@bank.com" && n !== "devops-oncall@bank.com").map((n, i) => (
                 <div key={i} className="notif-row">
                   <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
                   <span className="notif-recipient">{n.recipient}</span>

@@ -14,6 +14,9 @@ connections with asyncio.Semaphore(10).
 """
 
 import asyncio
+import socket
+import ipaddress
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -41,6 +44,20 @@ _PRIVATE_PREFIXES = (
     "https://172.",
 )
 
+
+def is_safe_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        ip_str = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(ip_str)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+        return True
+    except Exception:
+        return False
 
 def _is_private_url(url: str) -> bool:
     """Return True if the URL targets localhost or a private IP range."""
@@ -155,6 +172,9 @@ async def _probe_single(
             result["last_traffic_at"] = last_traffic_raw
 
         headers = _build_headers(url)
+
+        if not is_safe_url(url):
+            raise ValueError("Blocked unsafe URL")
 
         # ── Step 2 — Reachability probe ────────────────────────────────────────
         response = None
