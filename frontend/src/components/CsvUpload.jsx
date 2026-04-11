@@ -75,9 +75,18 @@ export default function CsvUpload() {
       const msg = `Uploaded ${total} APIs${parts.length ? ' — ' + parts.join(', ') + ' detected' : ''}`;
       showToast(msg, 'success');
     } catch (err) {
-      const msg = err.response?.data?.detail?.detail
-        || err.response?.data?.detail
-        || 'Upload failed. Please try again.';
+      const detailObj = err.response?.data?.detail;
+      let msg = err.response?.data?.detail?.detail || detailObj || 'Upload failed. Please try again.';
+      
+      // If there are specific row errors, append them so the user knows exactly what to fix
+      if (detailObj && Array.isArray(detailObj.parse_errors) && detailObj.parse_errors.length > 0) {
+        const rowErrDetails = detailObj.parse_errors
+          .slice(0, 3)
+          .map(e => `Row ${e.row}: ${e.error}`)
+          .join(' | ');
+        msg = `${msg} Details: ${rowErrDetails}`;
+      }
+      
       setError(typeof msg === 'string' ? msg : JSON.stringify(msg));
       showToast('Upload failed.', 'error');
     } finally {

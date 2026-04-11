@@ -591,33 +591,7 @@ export default function ApiDetail({ apiId, apiPath, onBack }) {
                       </div>
                     ))}
                   </div>
-                  {/* Optional redirect field */}
-                  <div style={{ marginTop: 16 }}>
-                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: 6 }}>
-                      Redirect Traffic To <span style={{ fontWeight: 400, color: '#94a3b8' }}>(optional — new safe endpoint path)</span>
-                    </label>
-                    <input
-                      type="text"
-                      id="decommission-redirect-to"
-                      placeholder="/api/v3/endpoint"
-                      value={redirectTo}
-                      onChange={e => setRedirectTo(e.target.value)}
-                      disabled={decommissioning}
-                      style={{
-                        width: '100%',
-                        padding: '9px 13px',
-                        border: '1px solid #e2e8f0',
-                        borderRadius: 8,
-                        fontSize: '0.875rem',
-                        fontFamily: 'monospace',
-                        background: '#f8fafc',
-                        boxSizing: 'border-box',
-                      }}
-                    />
-                    <p style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: 4 }}>
-                      If provided, all traffic to this zombie endpoint will be automatically redirected to your safe replacement.
-                    </p>
-                  </div>
+
                   <button
                     className="btn-decommission"
                     onClick={handleDecommission}

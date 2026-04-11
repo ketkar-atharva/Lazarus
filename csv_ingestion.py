@@ -6,7 +6,9 @@ Lazarus API Defence Platform
 import io
 import csv as csv_module
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Literal
+
+from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header
@@ -16,6 +18,12 @@ import database as db
 from probe_engine import probe_and_classify
 
 router = APIRouter(prefix="/catalog", tags=["API Catalog"])
+
+class APIRow(BaseModel):
+    api_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    url: HttpUrl
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
+    last_traffic_at: Optional[datetime] = None
 
 # ── Required CSV columns (full inventory upload) ──
 REQUIRED_COLUMNS = {
@@ -221,9 +229,24 @@ async def upload_catalog(
         entry.update({"api_id": api_id, "url": url, "method": method})
 
         # last_traffic_at is optional (ensure we nullify if it's essentially empty)
-        lta = entry.get("last_traffic_at", "").lower()
-        if lta in ("", "none", "null", "nan", "nat"):
+        lta = entry.get("last_traffic_at", "")
+        if isinstance(lta, str) and lta.lower() in ("", "none", "null", "nan", "nat"):
             entry["last_traffic_at"] = None
+        elif lta:
+            try:
+                dt = pd.to_datetime(lta, format='mixed', dayfirst=True)
+                entry["last_traffic_at"] = dt.isoformat()
+            except Exception:
+                pass
+
+        try:
+            validated = APIRow(**entry)
+            entry["url"] = str(validated.url)
+            entry["method"] = validated.method
+        except ValidationError as e:
+            error_msg = "; ".join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
+            errors.append({"row": int(idx) + 2, "api_id": api_id, "error": f"Validation failed: {error_msg}"})
+            continue
 
         apis_to_probe.append(entry)
 
@@ -359,7 +382,23 @@ async def probe_upload(
         # last_traffic_at is optional — include only when the column exists and has a value
         if "last_traffic_at" in row_dict:
             lta = str(row_dict["last_traffic_at"]).strip()
-            entry["last_traffic_at"] = lta if lta.lower() not in ("", "none", "null", "nat") else None
+            if lta.lower() in ("", "none", "null", "nat"):
+                entry["last_traffic_at"] = None
+            else:
+                try:
+                    dt = pd.to_datetime(lta, format='mixed', dayfirst=True)
+                    entry["last_traffic_at"] = dt.isoformat()
+                except Exception:
+                    entry["last_traffic_at"] = lta
+
+        try:
+            validated = APIRow(**entry)
+            entry["url"] = str(validated.url)
+            entry["method"] = validated.method
+        except ValidationError as e:
+            error_msg = "; ".join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
+            parse_errors.append({"row": int(idx) + 2, "api_id": api_id, "error": f"Validation failed: {error_msg}"})
+            continue
 
         apis_to_probe.append(entry)
 

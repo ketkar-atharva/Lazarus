@@ -134,7 +134,7 @@ export default function DecommissionConfirmPanel({ result, apiPath }) {
           <p className="dcp-audit-heading">Audit Receipt</p>
 
           <div className="dcp-audit-grid">
-            <div className="dcp-audit-item">
+            {/* <div className="dcp-audit-item">
               <Fingerprint className="w-3.5 h-3.5" />
               <span className="dcp-audit-label">Plugin ID</span>
               <code className="dcp-audit-value">{pluginId}</code>
@@ -143,7 +143,7 @@ export default function DecommissionConfirmPanel({ result, apiPath }) {
               <Route className="w-3.5 h-3.5" />
               <span className="dcp-audit-label">Route ID</span>
               <code className="dcp-audit-value">{routeId}</code>
-            </div>
+            </div> */}
             <div className="dcp-audit-item">
               <Clock className="w-3.5 h-3.5" />
               <span className="dcp-audit-label">Timestamp</span>

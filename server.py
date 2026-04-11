@@ -1,15 +1,17 @@
 from contextlib import asynccontextmanager
 import asyncio
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse, Response
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 from mock_data import (
     EXPECTED_CATALOG,
     LIVE_TRAFFIC_FLOW,
-    MONITORING_DATA,
     analyze_api_discrepancies,
     get_api_detail,
 )
@@ -36,52 +38,231 @@ load_dotenv()
 
 PROBE_INTERVAL_SECONDS = 30 * 60  # 30 minutes
 
+# Track the next scheduled scan time for GET /api/monitor
+_next_scheduled_scan: datetime | None = None
+
+
+# ── Anomaly detection rules ────────────────────────────────────────────────────
+
+def _detect_anomalies(api_id: str, url: str, old: dict, new: dict) -> list:
+    """Compare old vs new probe result and return any security events."""
+    events = []
+    now = datetime.utcnow().isoformat() + "Z"
+
+    # auth_exposed False → True
+    if not old.get("auth_exposed") and new.get("auth_exposed"):
+        events.append({
+            "api_id": api_id, "url": url,
+            "anomaly_type": "auth_exposed_changed",
+            "old_value": False, "new_value": True,
+            "severity": "CRITICAL", "detected_at": now,
+        })
+
+    # lazarus_status ZOMBIE → ACTIVE
+    old_ls = str(old.get("lazarus_status", "")).upper()
+    new_ls = str(new.get("lazarus_status", "")).upper()
+    if old_ls == "ZOMBIE" and new_ls == "ACTIVE":
+        events.append({
+            "api_id": api_id, "url": url,
+            "anomaly_type": "status_zombie_to_active",
+            "old_value": old_ls, "new_value": new_ls,
+            "severity": "HIGH", "detected_at": now,
+        })
+
+    # http_code 4xx → 200
+    old_code = old.get("http_code") or 0
+    new_code = new.get("http_code") or 0
+    if 400 <= old_code < 500 and new_code == 200:
+        events.append({
+            "api_id": api_id, "url": url,
+            "anomaly_type": "http_code_4xx_to_200",
+            "old_value": old_code, "new_value": new_code,
+            "severity": "CRITICAL", "detected_at": now,
+        })
+
+    # lazarus_status ACTIVE → ZOMBIE
+    if old_ls == "ACTIVE" and new_ls == "ZOMBIE":
+        events.append({
+            "api_id": api_id, "url": url,
+            "anomaly_type": "status_active_to_zombie",
+            "old_value": old_ls, "new_value": new_ls,
+            "severity": "MEDIUM", "detected_at": now,
+        })
+
+    return events
+
+
+# ── Core scan function (reused by scheduler + manual trigger) ──────────────────
+
+async def _run_probe_scan() -> dict:
+    """
+    Probe all APIs in the catalog, detect anomalies, persist results + metadata.
+    Returns the monitor payload dict.
+    """
+    global _next_scheduled_scan
+
+    apis = await db.get_all_api_catalog()
+    if not apis:
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        return {
+            "last_scan": now_iso,
+            "next_scan": _next_scheduled_scan.isoformat() + "Z" if _next_scheduled_scan else None,
+            "total_apis": 0,
+            "scan_results": [],
+        }
+
+    # Snapshot old values for anomaly detection
+    old_map = {a["api_id"]: a for a in apis}
+
+    results = await probe_and_classify(apis)
+    scan_time = datetime.utcnow()
+    scan_time_iso = scan_time.isoformat() + "Z"
+
+    scan_results = []
+    zombie_count = stale_count = active_count = shadow_count = 0
+
+    for result in results:
+        aid = result.get("api_id")
+        result["probed_at"] = scan_time_iso
+        await db.upsert_api_catalog({**result, "ingested_at": scan_time_iso})
+
+        # Anomaly detection
+        old_doc = old_map.get(aid, {})
+        anomalies = _detect_anomalies(
+            aid, result.get("url", ""), old_doc, result
+        )
+        for event in anomalies:
+            await db.save_security_event(event)
+
+        # Status change log (existing behaviour)
+        old_status = old_doc.get("lazarus_status", "ACTIVE")
+        new_status = result.get("lazarus_status", "ACTIVE")
+        if old_status != new_status:
+            await db.log_status_change(aid, old_status, new_status)
+
+        # Count
+        ls = str(new_status).upper()
+        if ls == "ZOMBIE":
+            zombie_count += 1
+        elif ls == "STALE":
+            stale_count += 1
+        elif ls == "SHADOW":
+            shadow_count += 1
+        else:
+            active_count += 1
+
+        scan_results.append({
+            "api_id": aid,
+            "url": result.get("url"),
+            "lazarus_status": new_status,
+            "http_code": result.get("http_code"),
+            "response_time_ms": result.get("response_time_ms"),
+            "auth_exposed": result.get("auth_exposed"),
+            "reachable": result.get("reachable"),
+            "probed_at": scan_time_iso,
+        })
+
+    # Sort: ZOMBIE/CRITICAL first
+    _severity_order = {"ZOMBIE": 0, "SHADOW": 1, "STALE": 2, "ACTIVE": 3}
+    scan_results.sort(key=lambda r: _severity_order.get(str(r.get("lazarus_status", "")).upper(), 9))
+
+    # Persist scan metadata
+    meta = {
+        "last_scan": scan_time_iso,
+        "next_scan": _next_scheduled_scan.isoformat() + "Z" if _next_scheduled_scan else None,
+        "total_scanned": len(results),
+        "zombie_count": zombie_count,
+        "stale_count": stale_count,
+        "active_count": active_count,
+        "shadow_count": shadow_count,
+    }
+    await db.upsert_scan_metadata(meta)
+
+    print(f"[Monitor] Scan complete: {len(results)} APIs probed ({zombie_count} zombie, {stale_count} stale, "
+          f"{shadow_count} shadow, {active_count} active).")
+
+    return {
+        "last_scan": scan_time_iso,
+        "next_scan": meta["next_scan"],
+        "total_apis": len(results),
+        "scan_results": scan_results,
+    }
+
 
 async def _background_probe_loop():
     """Background task: re-probe all catalog APIs every 30 minutes."""
+    global _next_scheduled_scan
     while True:
+        _next_scheduled_scan = datetime.utcnow() + timedelta(seconds=PROBE_INTERVAL_SECONDS)
         await asyncio.sleep(PROBE_INTERVAL_SECONDS)
+        try:
+            await _run_probe_scan()
+        except Exception as e:
+            print(f"[Monitor] Background probe failed: {e}")
+
+
+async def _kong_reconciliation_loop():
+    """Background task: Periodically reinstate request-termination for decommissioned APIs missing in Kong."""
+    while True:
+        await asyncio.sleep(10 * 60)
         try:
             apis = await db.get_all_api_catalog()
             if not apis:
                 continue
-            # Snapshot old statuses
-            old_statuses = {a["api_id"]: a.get("lazarus_status", "ACTIVE") for a in apis}
-            results = await probe_and_classify(apis)
-            for result in results:
-                aid = result.get("api_id")
-                new_status = result.get("lazarus_status", "ACTIVE")
-                old_status = old_statuses.get(aid, "ACTIVE")
-                await db.upsert_api_catalog({**result, "ingested_at": datetime.utcnow().isoformat() + "Z"})
-                if old_status != new_status:
-                    await db.log_status_change(aid, old_status, new_status)
-            print(f"[Probe] Background probe complete: {len(results)} APIs re-classified.")
+            for api in apis:
+                if str(api.get("lazarus_status", "")).upper() == "DECOMMISSIONED":
+                    api_id = api.get("api_id")
+                    if not api_id:
+                        continue
+                    has_plugin = await kong_client.get_plugin(api_id, "request-termination")
+                    if not has_plugin:
+                        await kong_client.apply_termination(api_id)
+                        audit_entry = {
+                            "action": "kong_drift_corrected",
+                            "api_id": api_id,
+                            "operator": "system_reconciliation",
+                            "ip": "localhost",
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "prev_status": "drifted",
+                            "new_status": "re-terminated"
+                        }
+                        await db.save_audit_entry(audit_entry)
+                        print(f"[Kong Recon] Corrected plugin drift for {api_id}")
         except Exception as e:
-            print(f"[Probe] Background probe failed: {e}")
+            print(f"[Kong Recon] Background reconciliation failed: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app):
-    """FastAPI lifespan: start background probe task on startup."""
-    task = asyncio.create_task(_background_probe_loop())
-    print("[Probe] Background probe loop started (interval: 30 min).")
+    """FastAPI lifespan: start background probe task and Kong reconciliation on startup."""
+    probe_task = asyncio.create_task(_background_probe_loop())
+    recon_task = asyncio.create_task(_kong_reconciliation_loop())
+    print("[Monitor] Background probe loop started (interval: 30 min).")
+    print("[Kong Recon] Background reconciliation loop started (interval: 10 min).")
     yield
-    task.cancel()
+    probe_task.cancel()
+    recon_task.cancel()
     try:
-        await task
+        await probe_task
+        await recon_task
     except asyncio.CancelledError:
         pass
 
 
 app = FastAPI(title="Lazarus — Zombie API Discovery & Defence", lifespan=lifespan)
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── Include Routers ──
 app.include_router(auth_router)
 app.include_router(catalog_router)
 
+# DEMO CONFIG: update/restrict `allow_origins` before deploying to production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -385,6 +566,7 @@ def _synthesize_security_details(api: dict) -> tuple:
     auth_exposed = api.get("auth_exposed", False)
     reachable = api.get("reachable", True)
     http_code = api.get("http_code")
+    secret_detected = api.get("secret_detected", False)
     
     score = 100
     is_https = str(api.get("url", "")).startswith("https")
@@ -407,13 +589,53 @@ def _synthesize_security_details(api: dict) -> tuple:
         score -= 15
         
     score = max(0, min(100, score))
+
+    rl_dict = api.get("rate_limit", {})
+    rl_enforced = rl_dict.get("rate_limit_enforced")
+    limit_hdrs = rl_dict.get("limit_headers", {})
+    if rl_enforced is False:
+        score -= 20
+        # Re-clamp to ensure it doesn't go below 0
+        score = max(0, score)
+        rl_status = "fail"
+        rl_details = "No rate limit enforced after 15 rapid requests."
+        rl_limit = "None"
+    elif rl_enforced is True:
+        rl_status = "pass"
+        rl_details = "Rate limit detected during probe."
+        rl_limit = limit_hdrs.get("X-RateLimit-Limit") or limit_hdrs.get("Retry-After") or "Unknown"
+    else:
+        rl_status = "warning"
+        rl_details = "Could not automatically verify rate limits via probe."
+        rl_limit = "Unknown"
+
+    # Secret detection override — force CRITICAL
+    if secret_detected:
+        score = 0
     
+    auth_status = "warning"
+    auth_type = "Unknown"
+    auth_details = "Could not verify."
+
+    if auth_exposed:
+        auth_status = "fail"
+        auth_type = "No Auth"
+        auth_details = "Responded HTTP 200 without Authorization."
+    elif http_code in (301, 302):
+        auth_status = "pass"
+        auth_type = "Auth Enforced"
+        auth_details = "Valid authentication enforcement via redirect."
+    elif reachable:
+        auth_status = "pass"
+        auth_type = "Unknown"
+        auth_details = "Enforces auth or could not verify."
+
     posture = {
         "overall_score": score,
         "authentication": {
-            "status": "fail" if auth_exposed else ("pass" if reachable else "warning"),
-            "type": "No Auth" if auth_exposed else "Unknown",
-            "details": "Responded HTTP 200 without Authorization." if auth_exposed else "Enforces auth or could not verify."
+            "status": auth_status,
+            "type": auth_type,
+            "details": auth_details
         },
         "encryption": {
             "status": "pass" if is_https else "fail",
@@ -421,13 +643,13 @@ def _synthesize_security_details(api: dict) -> tuple:
             "details": "Using HTTPS" if is_https else "Using plaintext HTTP."
         },
         "rate_limiting": {
-            "status": "warning",
-            "limit": "Unknown",
-            "details": "Could not automatically verify rate limits via probe."
+            "status": rl_status,
+            "limit": rl_limit,
+            "details": rl_details
         },
         "data_exposure": {
-            "status": "warning" if auth_exposed else "pass",
-            "details": "Potential unauthenticated data exposure." if auth_exposed else "No immediate exposure detected."
+            "status": "fail" if secret_detected else ("warning" if auth_exposed else "pass"),
+            "details": "CRITICAL — Secrets/credentials detected in API response body." if secret_detected else ("Potential unauthenticated data exposure." if auth_exposed else "No immediate exposure detected.")
         },
         "input_validation": {
             "status": "fail" if http_code and http_code >= 500 else "pass",
@@ -436,6 +658,9 @@ def _synthesize_security_details(api: dict) -> tuple:
     }
     
     reasoning = []
+    if secret_detected:
+        secret_types = api.get("secret_types", [])
+        reasoning.append(f"CRITICAL: Secrets detected in response body — types: {', '.join(secret_types)}.")
     if ls == "zombie":
         reasoning.append("Endpoint is unreachable or timing out consistently.")
     if ls == "shadow":
@@ -448,10 +673,14 @@ def _synthesize_security_details(api: dict) -> tuple:
         reasoning.append(f"Classified as {ls.upper()} based on HTTP probe results.")
         
     recommendations = []
+    if secret_detected:
+        recommendations.append({"action": "Rotate all credentials immediately — secrets detected in API response.", "priority": "critical"})
     if not reachable or ls == "zombie":
         recommendations.append({"action": "Decommission gateway route and remove from DNS.", "priority": "critical"})
     if auth_exposed:
         recommendations.append({"action": "Enforce strict JWT/API Key authentication immediately.", "priority": "critical"})
+    if rl_enforced is False:
+        recommendations.append({'action': 'Enforce rate limiting — API accepts unlimited requests.', 'priority': 'high'})
     if not is_https:
         recommendations.append({"action": "Migrate API traffic to HTTPS to ensure TLS encryption.", "priority": "high"})
     if ls == "stale":
@@ -609,7 +838,8 @@ async def get_honeypot_activity(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/decommission")
-async def decommission_api(req: DecommissionRequest, current_user: dict = Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def decommission_api(request: Request, req: DecommissionRequest, current_user: dict = Depends(get_current_user)):
     existing = await db.get_decommission_by_path(req.path)
     if existing:
         return {
@@ -625,7 +855,7 @@ async def decommission_api(req: DecommissionRequest, current_user: dict = Depend
         "reason": req.reason,
         "status": "decommissioned",
         "initiated_at": now.isoformat() + "Z",
-        "completed_at": (now.replace(second=now.second + 12)).isoformat() + "Z",
+        "completed_at": (now + timedelta(seconds=12)).isoformat() + "Z",
         "operator": current_user.get("email", "admin@lazarus.bank.internal"),
         "approval": "Auto-approved — CRITICAL risk score below 20",
         "steps_completed": [
@@ -692,6 +922,29 @@ async def decommission_api(req: DecommissionRequest, current_user: dict = Depend
         entry["stakeholder_notifications"][0]["error"] = email_result["error"]
     await db.save_decommission(entry)
 
+    # ── Audit Log & Catalog Update ──
+    api_doc = await db.get_api_catalog_by_id(req.api_id)
+    prev_status = api_doc.get("lazarus_status", "ACTIVE") if api_doc else "UNKNOWN"
+
+    operator_sub = current_user.get("sub") or current_user.get("email") or "system"
+    ip_addr = request.client.host if request and request.client else "unknown"
+
+    audit_entry = {
+        "action": "decommission",
+        "api_id": req.api_id,
+        "operator": operator_sub,
+        "ip": ip_addr,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "prev_status": prev_status,
+        "new_status": "DECOMMISSIONED"
+    }
+    await db.save_audit_entry(audit_entry)
+
+    if api_doc:
+        api_doc["lazarus_status"] = "DECOMMISSIONED"
+        await db.upsert_api_catalog(api_doc)
+        await db.log_status_change(req.api_id, prev_status, "DECOMMISSIONED")
+
     entry["email_sent"] = email_result
     return entry
 
@@ -711,17 +964,89 @@ async def kong_register(req: KongRegisterRequest, current_user: dict = Depends(g
     }
 
 
-# ── Monitoring Endpoint ──
+# ── Monitoring Endpoints ──
 
 @app.get("/api/monitor")
-def get_monitoring(current_user: dict = Depends(get_current_user)):
-    return MONITORING_DATA
+async def get_monitoring(current_user: dict = Depends(get_current_user)):
+    """Return last scan summary + per-API scan results from the most recent probe."""
+    meta = await db.get_scan_metadata()
+    if not meta:
+        # No scan has run yet — return live catalog snapshot
+        catalog = await db.get_all_api_catalog()
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        scan_results = []
+        for api in catalog:
+            scan_results.append({
+                "api_id": api.get("api_id"),
+                "url": api.get("url"),
+                "lazarus_status": api.get("lazarus_status", "ACTIVE"),
+                "http_code": api.get("http_code"),
+                "response_time_ms": api.get("response_time_ms"),
+                "auth_exposed": api.get("auth_exposed"),
+                "reachable": api.get("reachable"),
+                "probed_at": api.get("probed_at"),
+            })
+        _severity_order = {"ZOMBIE": 0, "SHADOW": 1, "STALE": 2, "ACTIVE": 3}
+        scan_results.sort(key=lambda r: _severity_order.get(str(r.get("lazarus_status", "")).upper(), 9))
+        return {
+            "last_scan": None,
+            "next_scan": _next_scheduled_scan.isoformat() + "Z" if _next_scheduled_scan else None,
+            "total_apis": len(catalog),
+            "scan_results": scan_results,
+        }
+
+    # Build per-API results from current catalog
+    catalog = await db.get_all_api_catalog()
+    scan_results = []
+    for api in catalog:
+        scan_results.append({
+            "api_id": api.get("api_id"),
+            "url": api.get("url"),
+            "lazarus_status": api.get("lazarus_status", "ACTIVE"),
+            "http_code": api.get("http_code"),
+            "response_time_ms": api.get("response_time_ms"),
+            "auth_exposed": api.get("auth_exposed"),
+            "reachable": api.get("reachable"),
+            "probed_at": api.get("probed_at"),
+        })
+    _severity_order = {"ZOMBIE": 0, "SHADOW": 1, "STALE": 2, "ACTIVE": 3}
+    scan_results.sort(key=lambda r: _severity_order.get(str(r.get("lazarus_status", "")).upper(), 9))
+
+    return {
+        "last_scan": meta.get("last_scan"),
+        "next_scan": meta.get("next_scan") or (_next_scheduled_scan.isoformat() + "Z" if _next_scheduled_scan else None),
+        "total_apis": meta.get("total_scanned", len(catalog)),
+        "zombie_count": meta.get("zombie_count", 0),
+        "stale_count": meta.get("stale_count", 0),
+        "active_count": meta.get("active_count", 0),
+        "shadow_count": meta.get("shadow_count", 0),
+        "scan_results": scan_results,
+    }
+
+
+@app.get("/api/security-events")
+async def get_security_events(current_user: dict = Depends(get_current_user)):
+    """Return all security anomaly events, newest first."""
+    return await db.get_security_events()
+
+
+@app.post("/api/monitor/scan-now")
+async def trigger_manual_scan(current_user: dict = Depends(get_current_user)):
+    """Trigger an immediate full re-probe of all APIs. Returns the scan results."""
+    result = await _run_probe_scan()
+    return result
 
 
 @app.get("/api/decommission-log")
 async def get_decommission_log(current_user: dict = Depends(get_current_user)):
     """Return all decommission records from MongoDB."""
     return await db.get_all_decommissions()
+
+
+@app.get("/api/audit-log")
+async def get_audit_log_api(current_user: dict = Depends(get_current_user)):
+    """Return recent audit log entries (max 50, descending timestamp)."""
+    return await db.get_audit_log(limit=50)
 
 
 @app.get("/api/activity-log")
@@ -1231,6 +1556,10 @@ def ai_attack_simulation(req: AiApiRequest, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=404, detail="API not found.")
     result = ai_engine.simulate_attack(detail)
     return {"api_path": detail.get("path"), "simulation": result}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
 
 
 @app.get("/api/ai/security-summary")

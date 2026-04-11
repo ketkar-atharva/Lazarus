@@ -73,3 +73,19 @@ async def decommission_service(api_id: str) -> dict:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def get_plugin(api_id: str, plugin_name: str = "request-termination") -> bool:
+    """Check if a specific plugin is enabled for a service."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{KONG_ADMIN_URL}/services/{api_id}/plugins")
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        plugins = resp.json().get("data", [])
+        return any(p.get("name") == plugin_name for p in plugins)
+
+
+async def apply_termination(api_id: str) -> dict:
+    """Alias for decommission_service to match user expectation."""
+    return await decommission_service(api_id)

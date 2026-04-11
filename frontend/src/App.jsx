@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Sparkles, Menu } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import api, { setupApiInterceptors } from './api';
 import Sidebar from './components/Sidebar';
@@ -84,6 +84,7 @@ function MainShell() {
   const [error, setError] = useState(null);
   const [selectedApi, setSelectedApi] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   /* ── Navigation History ── */
   const [history, setHistory] = useState([{ page: 'dashboard', api: null }]);
@@ -145,7 +146,15 @@ function MainShell() {
     }
   }, []);
 
-  useEffect(() => { fetchData(true); }, [fetchData]);
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      fetchData(true);
+    } else {
+      fetchData(false);
+    }
+  }, [fetchData, currentPage]);
 
 
 
@@ -157,18 +166,23 @@ function MainShell() {
   const handleNavigate = useCallback((page) => navigateTo(page, null), [navigateTo]);
 
   /* ── Compute counts for sidebar ── */
-  const catalogPaths = new Set(catalog.map(a => normalizePath(a.path)));
+  const getPath = (a) => {
+    if (a.path) return a.path;
+    if (!a.url) return '';
+    try { return new URL(a.url).pathname; } catch (e) { return a.url; }
+  };
+  const catalogPaths = new Set(catalog.map(a => normalizePath(getPath(a))));
   let shadowCount = 0, zombieCount = 0, staleCount = 0, activeCount = 0;
   catalog.forEach(api => {
     // Support both mock_data format (is_deprecated) and csv format (lazarus_status)
-    const lazStatus = api.lazarus_status;
+    const lazStatus = api.lazarus_status ? api.lazarus_status.toLowerCase() : null;
     if (lazStatus) {
       if (lazStatus === 'zombie')  zombieCount++;
       else if (lazStatus === 'shadow') shadowCount++;
       else if (lazStatus === 'stale')  staleCount++;
       else activeCount++;
     } else {
-      const flow = traffic.find(t => normalizePath(t.path) === normalizePath(api.path));
+      const flow = traffic.find(t => normalizePath(t.path) === normalizePath(getPath(api)));
       if (api.is_deprecated && flow && flow.hit_count > 0) zombieCount++;
       else if (!flow || flow.hit_count === 0) staleCount++;
       else activeCount++;
@@ -249,15 +263,21 @@ function MainShell() {
 
   return (
     <div className="app-shell">
+      <div className={`sidebar-overlay ${isSidebarOpen ? 'open' : ''}`} onClick={() => setIsSidebarOpen(false)} />
       <Sidebar
         currentPage={currentPage === 'detail' ? 'dashboard' : currentPage}
         onNavigate={handleNavigate}
         apiCounts={apiCounts}
+        isOpen={isSidebarOpen}
+        setIsOpen={setIsSidebarOpen}
       />
       <main className="main-content">
         {/* Navigation Bar */}
         <div className="topnav-bar">
           <div className="topnav-buttons">
+            <button className="mobile-menu-btn" onClick={() => setIsSidebarOpen(true)} title="Open menu">
+              <Menu className="w-5 h-5" />
+            </button>
             <button
               className={`topnav-btn ${canGoBack ? '' : 'disabled'}`}
               onClick={goBack}

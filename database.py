@@ -19,6 +19,9 @@ redirect_rules = db["redirect_rules"]
 api_catalog = db["api_catalog"]
 users = db["users"]
 status_change_log = db["status_change_log"]
+audit_log = db["audit_log"]
+security_events = db["security_events"]
+scan_metadata = db["scan_metadata"]
 
 
 # ── Decommission Operations ──
@@ -96,6 +99,28 @@ async def log_activity(action: str, target: str, detail: str):
         })
     except Exception as e:
         print(f"[DB] Failed to log activity: {e}")
+
+
+# ── Audit Log ──
+
+async def save_audit_entry(entry: dict):
+    """Save an audit log entry."""
+    try:
+        await audit_log.insert_one(entry)
+    except Exception as e:
+        print(f"[DB] Failed to save audit log: {e}")
+
+async def get_audit_log(limit: int = 50) -> list:
+    """Return recent audit log entries."""
+    try:
+        return await (
+            audit_log.find({}, {"_id": 0})
+            .sort("timestamp", -1)
+            .limit(limit)
+            .to_list(length=None)
+        )
+    except Exception:
+        return []
 
 
 async def get_activity_log(limit: int = 50) -> list:
@@ -265,3 +290,49 @@ async def is_connected() -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Security Events ──
+
+async def save_security_event(event: dict):
+    """Insert a security anomaly event."""
+    try:
+        await security_events.insert_one(event)
+    except Exception as e:
+        print(f"[DB] Failed to save security event: {e}")
+
+
+async def get_security_events(limit: int = 200) -> list:
+    """Return recent security events, newest first."""
+    try:
+        return await (
+            security_events.find({}, {"_id": 0})
+            .sort("detected_at", -1)
+            .limit(limit)
+            .to_list(length=None)
+        )
+    except Exception:
+        return []
+
+
+# ── Scan Metadata ──
+
+async def upsert_scan_metadata(doc: dict):
+    """Upsert the latest scan run metadata (keyed on 'latest')."""
+    try:
+        await scan_metadata.replace_one(
+            {"_id": "latest"},
+            {**doc, "_id": "latest"},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"[DB] Failed to upsert scan_metadata: {e}")
+
+
+async def get_scan_metadata() -> dict | None:
+    """Return the latest scan metadata document."""
+    try:
+        return await scan_metadata.find_one({"_id": "latest"}, {"_id": 0})
+    except Exception:
+        return None
+

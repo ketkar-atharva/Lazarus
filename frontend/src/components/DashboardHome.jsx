@@ -594,7 +594,7 @@ export default function DashboardHome({ catalog, traffic, analysis, onViewApi, o
             </div>
             <div className="health-grid">
               <div className="health-item"><CheckCircle2 className="w-4 h-4 text-green-500" /><span className="health-label">Scanner</span><span className="health-value green">Active</span></div>
-              <div className="health-item"><CheckCircle2 className="w-4 h-4 text-green-500" /><span className="health-label">API Gateway</span><span className="health-value green">Connected</span></div>
+              <div className="health-item"><CheckCircle2 className="w-4 h-4 text-green-500" /><span className="health-label">Kong Gateway</span><span className="health-value green">Connected</span></div>
               <div className="health-item">
                 {dbStatus?.connected ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <AlertTriangle className="w-4 h-4 text-amber-500" />}
                 <span className="health-label">MongoDB</span>

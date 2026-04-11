@@ -13,6 +13,8 @@ All probes run concurrently via asyncio.gather, capped at 10 simultaneous
 connections with asyncio.Semaphore(10).
 """
 
+import re
+
 import asyncio
 import socket
 import ipaddress
@@ -29,6 +31,27 @@ STALE_DAYS = 90
 MAX_CONCURRENT = 10
 
 LAZARUS_UA = "Lazarus-Scanner/1.0"
+
+# Secret-detection regex patterns (never log matched values)
+_SECRET_PATTERNS = {
+    "jwt_token": r"eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+",
+    "aws_key": r"AKIA[0-9A-Z]{16}",
+    "private_key": r"-----BEGIN (RSA |EC )?PRIVATE KEY-----",
+    "connection_string": r"(mongodb|postgres|mysql|redis):\/\/[^\s\"']+",
+    "api_key_pattern": r"(?i)(api[_-]?key|apikey)\s*[:=]\s*['\"]?([A-Za-z0-9]{20,})",
+    "bearer_token": r"(?i)bearer\s+[A-Za-z0-9\-._~+\/]+=*",
+}
+
+
+def scan_for_secrets(body: str) -> list:
+    """Scan response body for leaked secrets. Returns matched type names only."""
+    if not body:
+        return []
+    found = []
+    for name, pattern in _SECRET_PATTERNS.items():
+        if re.search(pattern, body):
+            found.append(name)
+    return found
 
 # Private / loopback IP ranges (simple prefix check)
 _PRIVATE_PREFIXES = (
@@ -126,6 +149,32 @@ def _staleness_result(last_traffic_dt: Optional[datetime]) -> dict:
     return {"is_stale": False, "last_traffic_unknown": False}
 
 
+async def check_rate_limit(client: httpx.AsyncClient, url: str, method: str) -> dict:
+    """Send 15 rapid sequential GET requests to check for rate limiting."""
+    result = {
+        "rate_limit_enforced": False,
+        "triggered_at_request": None,
+        "limit_headers": {}
+    }
+    headers = _build_headers(url)
+    check_method = "GET"
+    for i in range(1, 16):
+        try:
+            resp = await client.request(check_method, url, headers=headers, timeout=TIMEOUT_SECONDS, follow_redirects=True)
+            if resp.status_code == 429:
+                result["rate_limit_enforced"] = True
+                result["triggered_at_request"] = i
+                for hdr in ["x-ratelimit-limit", "x-ratelimit-remaining", "retry-after"]:
+                    if hdr in resp.headers:
+                        orig_key = "X-RateLimit-Limit" if hdr == "x-ratelimit-limit" else ("X-RateLimit-Remaining" if hdr == "x-ratelimit-remaining" else "Retry-After")
+                        result["limit_headers"][orig_key] = resp.headers[hdr]
+                return result
+        except Exception as e:
+            return {"rate_limit_enforced": None, "error": str(e)}
+        await asyncio.sleep(0.1)
+    return result
+
+
 # ── Single-API probe ───────────────────────────────────────────────────────────
 
 async def _probe_single(
@@ -165,6 +214,9 @@ async def _probe_single(
             "auth_exposed": False,
             "last_traffic_unknown": False, # Step 3 may flip this to True
             "probed_at": probed_at,
+            "rate_limit_enforced": None,
+            "requests_before_limit": None,
+            "limit_headers": {},
         }
 
         # last_traffic_at is included only when it was present in the input
@@ -174,7 +226,9 @@ async def _probe_single(
         headers = _build_headers(url)
 
         if not is_safe_url(url):
-            raise ValueError("Blocked unsafe URL")
+            result["lazarus_status"] = "ZOMBIE"
+            result["reachable"] = False
+            return result
 
         # ── Step 2 — Reachability probe ────────────────────────────────────────
         response = None
@@ -193,14 +247,25 @@ async def _probe_single(
             result["reachable"] = True
             result["response_time_ms"] = round(end_ms - start_ms, 2)
 
+            # Secret scan on response body
+            secrets = scan_for_secrets(response.text)
+            result["secret_detected"] = len(secrets) > 0
+            result["secret_types"] = secrets
+            
+
+
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError):
             result["lazarus_status"] = "ZOMBIE"
             result["reachable"] = False
+            result["secret_detected"] = False
+            result["secret_types"] = []
             return result
         except Exception:
             # Any unexpected transport error → treat as ZOMBIE
             result["lazarus_status"] = "ZOMBIE"
             result["reachable"] = False
+            result["secret_detected"] = False
+            result["secret_types"] = []
             return result
 
         # ── Step 3 — Staleness check ───────────────────────────────────────────
@@ -240,7 +305,10 @@ async def _probe_single(
                 follow_redirects=True,
             )
             if auth_resp.status_code == 200:
-                result["auth_exposed"] = True
+                body_lower = auth_resp.text.lower()
+                has_login_form = "<form" in body_lower and "type=\"password\"" in body_lower
+                if not has_login_form:
+                    result["auth_exposed"] = True
         except Exception:
             # Auth probe failure is non-fatal; leave auth_exposed = False
             pass
@@ -279,6 +347,18 @@ async def probe_and_classify(apis: list) -> list:
             _probe_single(api, client, semaphore)
             for api in apis
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
+        base_results = await asyncio.gather(*tasks, return_exceptions=False)
 
-    return list(results)
+        final_results = []
+        for res in base_results:
+            if res.get("reachable") and res.get("lazarus_status") == "ACTIVE":
+                res["rate_limit"] = await check_rate_limit(client, res["url"], res["method"])
+            else:
+                res["rate_limit"] = {
+                    "rate_limit_enforced": None,
+                    "triggered_at_request": None,
+                    "limit_headers": {}
+                }
+            final_results.append(res)
+
+    return final_results

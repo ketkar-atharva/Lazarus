@@ -23,11 +23,11 @@ const navItems = [
   { id: 'ai',        label: 'AI Assistant',      icon: Sparkles         },
 ];
 
-export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
+export default function Sidebar({ currentPage, onNavigate, apiCounts, isOpen, setIsOpen }) {
   const { user, logout } = useAuth();
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${isOpen ? 'open' : ''}`}>
       {/* Logo */}
       <div className="sidebar-logo">
         <div className="sidebar-logo-icon">
@@ -48,7 +48,10 @@ export default function Sidebar({ currentPage, onNavigate, apiCounts }) {
           return (
             <button
               key={item.id}
-              onClick={() => onNavigate(item.id)}
+              onClick={() => {
+                onNavigate(item.id);
+                if (setIsOpen) setIsOpen(false);
+              }}
               className={`sidebar-nav-item ${isActive ? 'active' : ''}`}
               id={`nav-${item.id}`}
             >
