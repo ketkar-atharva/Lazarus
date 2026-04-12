@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-import bcrypt
+from passlib.context import CryptContext
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -24,6 +24,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 8
 
 # ── Crypto ──
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -37,6 +38,7 @@ class SignupRequest(BaseModel):
     full_name: str
     employee_id: str
     department: str
+    invite_code: str
 
 
 class TokenResponse(BaseModel):
@@ -48,12 +50,12 @@ class TokenResponse(BaseModel):
 # ── Helpers ──
 
 def _hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return pwd_context.hash(password)
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return pwd_context.verify(plain, hashed)
     except Exception:
         return False
 
@@ -127,6 +129,24 @@ async def signup(req: SignupRequest):
             detail={"detail": "An account with this email already exists.", "code": "EMAIL_CONFLICT"},
         )
 
+    # Validate invite code
+    invite = await db.get_invite_code(req.invite_code)
+    if not invite:
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": "Invalid invite code.", "code": "INVALID_INVITE_CODE"},
+        )
+    if invite.get("is_used"):
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": "Invite code has already been used.", "code": "USED_INVITE_CODE"},
+        )
+    if not invite.get("is_active"):
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": "Invite code has been revoked.", "code": "REVOKED_INVITE_CODE"},
+        )
+
     user_doc = {
         "email": req.email.lower(),
         "hashed_password": _hash_password(req.password),
@@ -139,6 +159,7 @@ async def signup(req: SignupRequest):
 
     try:
         await db.create_user(user_doc)
+        await db.mark_invite_code_used(req.invite_code)
     except Exception as e:
         raise HTTPException(
             status_code=500,

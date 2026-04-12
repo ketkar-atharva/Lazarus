@@ -15,6 +15,7 @@ export default function Signup({ onSwitchToLogin }) {
     email: '',
     password: '',
     confirmPassword: '',
+    invite_code: '',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -65,6 +66,7 @@ export default function Signup({ onSwitchToLogin }) {
         full_name: formData.full_name,
         employee_id: formData.employee_id,
         department: formData.department,
+        invite_code: formData.invite_code,
       });
 
       // 2. Auto-login
@@ -139,18 +141,33 @@ export default function Signup({ onSwitchToLogin }) {
               </div>
             </div>
 
-            <div className="form-group">
-              <label htmlFor="signup-department" className="form-label">Department</label>
-              <input
-                id="signup-department"
-                name="department"
-                type="text"
-                value={formData.department}
-                onChange={handleChange}
-                placeholder="e.g. Core Banking, Security, R&D"
-                className="form-input"
-                required
-              />
+            <div className="auth-row">
+              <div className="form-group">
+                <label htmlFor="signup-department" className="form-label">Department</label>
+                <input
+                  id="signup-department"
+                  name="department"
+                  type="text"
+                  value={formData.department}
+                  onChange={handleChange}
+                  placeholder="e.g. Core Banking, Security, R&D"
+                  className="form-input"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="signup-invite-code" className="form-label">Invite Code</label>
+                <input
+                  id="signup-invite-code"
+                  name="invite_code"
+                  type="text"
+                  value={formData.invite_code}
+                  onChange={handleChange}
+                  placeholder="Paste your unique code"
+                  className="form-input"
+                  required
+                />
+              </div>
             </div>
 
             <div className="form-group">

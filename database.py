@@ -22,6 +22,49 @@ status_change_log = db["status_change_log"]
 audit_log = db["audit_log"]
 security_events = db["security_events"]
 scan_metadata = db["scan_metadata"]
+invite_codes = db["invite_codes"]
+
+# ── Invite Code Operations ──
+
+async def create_invite_code(doc: dict):
+    """Insert a new invite code."""
+    try:
+        await invite_codes.insert_one(doc)
+    except Exception as e:
+        print(f"[DB] Failed to create invite code: {e}")
+
+
+async def get_invite_code(code: str) -> dict | None:
+    """Return an invite code document by its code string."""
+    try:
+        return await invite_codes.find_one({"code": code}, {"_id": 0})
+    except Exception:
+        return None
+
+
+async def mark_invite_code_used(code: str):
+    """Mark an invite code as used."""
+    try:
+        await invite_codes.update_one(
+            {"code": code},
+            {"$set": {
+                "is_used": True,
+                "used_at": datetime.utcnow().isoformat() + "Z"
+            }}
+        )
+    except Exception as e:
+        print(f"[DB] Failed to mark invite code as used: {e}")
+
+
+async def revoke_invite_code(code: str):
+    """Mark an invite code as inactive (revoked)."""
+    try:
+        await invite_codes.update_one(
+            {"code": code},
+            {"$set": {"is_active": False}}
+        )
+    except Exception as e:
+        print(f"[DB] Failed to revoke invite code: {e}")
 
 
 # ── Decommission Operations ──

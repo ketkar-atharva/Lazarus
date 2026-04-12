@@ -21,6 +21,7 @@ import database as db
 from email_notifier import send_decommission_email
 import kong_client
 from auth import get_current_user, router as auth_router
+import admin
 from csv_ingestion import router as catalog_router
 from probe_engine import probe_and_classify
 import requests as req_lib
@@ -258,6 +259,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ── Include Routers ──
 app.include_router(auth_router)
 app.include_router(catalog_router)
+app.include_router(admin.router)
 
 # DEMO CONFIG: update/restrict `allow_origins` before deploying to production
 app.add_middleware(

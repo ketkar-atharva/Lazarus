@@ -105,6 +105,20 @@
   width: 100%;
 }
 
+.auth-card-wide {
+  max-width: 500px;
+}
+
+.auth-row {
+  display: flex;
+  gap: 16px;
+}
+
+.auth-row .form-group {
+  flex: 1;
+  margin-bottom: 20px;
+}
+
 .auth-form {
   display: flex;
   flex-direction: column;

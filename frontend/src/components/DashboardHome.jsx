@@ -414,7 +414,7 @@ export default function DashboardHome({ catalog, traffic, analysis, onViewApi, o
             and deployment environments to discover <strong>undocumented</strong>, <strong>shadow</strong>,
             and <strong>zombie APIs</strong>. It classifies each API's security posture, provides
             actionable recommendations, and supports automated decommissioning workflows with
-            full audit trails for <strong>RBI &amp; PCI-DSS compliance</strong>.
+            full execution report.
           </p>
           <div className="hero-actions">
             <button className="hero-btn primary" onClick={() => onNavigate('inventory')}>
