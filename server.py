@@ -23,8 +23,9 @@ import kong_client
 from auth import get_current_user, router as auth_router
 import admin
 from csv_ingestion import router as catalog_router
-from probe_engine import probe_and_classify
+from probe_engine import probe_and_classify, scan_for_secrets, check_rate_limit, _build_headers
 import requests as req_lib
+import httpx
 import io
 import time
 from reportlab.lib.pagesizes import letter
@@ -762,11 +763,7 @@ def health():
 
 # ── Detail Endpoint ──
 
-@app.get("/api/detail")
-async def api_detail(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
-    if not api_id and not path:
-        raise HTTPException(status_code=400, detail="Provide api_id or path query param.")
-
+async def _get_api_detail_full(api_id: str = None, path: str = None):
     # Try DB catalog first (CSV-ingested), then fall back to mock_data
     result = None
     mongo_catalog = await db.get_all_api_catalog()
@@ -807,7 +804,7 @@ async def api_detail(api_id: str = None, path: str = None, current_user: dict = 
         result = get_api_detail(api_id=api_id, path=path)
 
     if not result:
-        raise HTTPException(status_code=404, detail="API not found.")
+        return None
 
     check_path = path or result.get("path")
     if check_path and await db.is_decommissioned(check_path):
@@ -815,6 +812,19 @@ async def api_detail(api_id: str = None, path: str = None, current_user: dict = 
         result["decommission_record"] = await db.get_decommission_by_path(check_path)
     else:
         result["is_decommissioned"] = False
+
+    return result
+
+
+@app.get("/api/detail")
+async def api_detail(api_id: str = None, path: str = None, current_user: dict = Depends(get_current_user)):
+    if not api_id and not path:
+        raise HTTPException(status_code=400, detail="Provide api_id or path query param.")
+
+    result = await _get_api_detail_full(api_id=api_id, path=path)
+
+    if not result:
+        raise HTTPException(status_code=404, detail="API not found.")
 
     return result
 
@@ -1116,11 +1126,13 @@ def _classify_endpoint(status_code: int) -> dict:
         return {"classification": "ANOMALY", "severity": "MEDIUM"}
 
 
-def _compute_overall_risk(discovered: list, missing_headers: list, open_cors: bool, server_leak: str | None) -> str:
+def _compute_overall_risk(discovered: list, missing_headers: list, open_cors: bool, server_leak: str | None, secret_detected: bool, auth_exposed: bool, rate_limit_info: dict) -> str:
     severities = {ep["severity"] for ep in discovered}
+    if secret_detected or auth_exposed:
+        return "CRITICAL"
     if "CRITICAL" in severities:
         return "CRITICAL"
-    if "HIGH" in severities or len(missing_headers) >= 4:
+    if "HIGH" in severities or len(missing_headers) >= 4 or rate_limit_info.get("rate_limit_enforced") is False:
         return "HIGH"
     if "MEDIUM" in severities or open_cors or missing_headers or server_leak:
         return "MEDIUM"
@@ -1128,7 +1140,7 @@ def _compute_overall_risk(discovered: list, missing_headers: list, open_cors: bo
 
 
 @app.post("/api/scan-external")
-def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_current_user)):
+async def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_current_user)):
     """External URL Scanner — probe any public URL for security misconfigurations."""
     url = req.url.strip()
     if not url:
@@ -1140,12 +1152,56 @@ def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_cur
     uses_https = parsed.scheme.lower() == "https"
 
     try:
-        t_start = time.monotonic()
-        resp = req_lib.get(url, timeout=10, allow_redirects=True)
-        response_time_ms = round((time.monotonic() - t_start) * 1000)
-        status_code = resp.status_code
-        headers = dict(resp.headers)
-        reachable = True
+        async with httpx.AsyncClient(verify=False) as client:
+            client_headers = _build_headers(url)
+            t_start = time.monotonic()
+            resp = await client.get(url, timeout=10.0, follow_redirects=True, headers=client_headers)
+            response_time_ms = round((time.monotonic() - t_start) * 1000)
+            status_code = resp.status_code
+            headers = dict(resp.headers)
+            reachable = True
+            body_text = resp.text
+
+            secrets = scan_for_secrets(body_text)
+            secret_detected = len(secrets) > 0
+
+            auth_exposed = False
+            try:
+                bare_headers = {k: v for k, v in client_headers.items() if k.lower() not in ("authorization", "x-api-key", "api-key")}
+                auth_resp = await client.get(url, headers=bare_headers, timeout=10.0, follow_redirects=True)
+                if auth_resp.status_code == 200:
+                    body_lower = auth_resp.text.lower()
+                    has_login_form = "<form" in body_lower and "type=\"password\"" in body_lower
+                    if not has_login_form:
+                        auth_exposed = True
+            except Exception:
+                pass
+
+            rate_limit_info = await check_rate_limit(client, url, "GET")
+
+            discovered_endpoints = []
+            for shadow_path in _SHADOW_PATHS:
+                probe_url = base_url + shadow_path
+                try:
+                    t0 = time.monotonic()
+                    pr = await client.get(
+                        probe_url, timeout=5.0,
+                        follow_redirects=False,
+                        headers={"User-Agent": "Lazarus-Scanner/2.0"},
+                    )
+                    probe_time = round((time.monotonic() - t0) * 1000)
+                    if pr.status_code not in (404, 410):
+                        classification = _classify_endpoint(pr.status_code)
+                        discovered_endpoints.append({
+                            "path": normalize_path(shadow_path),
+                            "status_code": pr.status_code,
+                            "response_time_ms": probe_time,
+                            "classification": classification["classification"],
+                            "severity": classification["severity"],
+                        })
+                except Exception:
+                    pass
+
     except Exception as exc:
         return {
             "url_scanned": url,
@@ -1173,34 +1229,17 @@ def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_cur
         if any(kw in sl for kw in _SERVER_TECH_KEYWORDS) or len(server_val) > 3:
             server_header_leak = server_val
 
-    discovered_endpoints = []
-    for shadow_path in _SHADOW_PATHS:
-        probe_url = base_url + shadow_path
-        try:
-            t0 = time.monotonic()
-            pr = req_lib.get(
-                probe_url, timeout=5,
-                allow_redirects=False,
-                headers={"User-Agent": "Lazarus-Scanner/2.0"},
-            )
-            probe_time = round((time.monotonic() - t0) * 1000)
-            if pr.status_code not in (404, 410):
-                classification = _classify_endpoint(pr.status_code)
-                discovered_endpoints.append({
-                    "path": normalize_path(shadow_path),
-                    "status_code": pr.status_code,
-                    "response_time_ms": probe_time,
-                    "classification": classification["classification"],
-                    "severity": classification["severity"],
-                })
-        except Exception:
-            pass
-
     overall_risk = _compute_overall_risk(
-        discovered_endpoints, missing_security_headers, open_cors, server_header_leak
+        discovered_endpoints, missing_security_headers, open_cors, server_header_leak, secret_detected, auth_exposed, rate_limit_info
     )
 
     issues = []
+    if secret_detected:
+        issues.append(f"Secrets detected in response ({', '.join(secrets)})")
+    if auth_exposed:
+        issues.append("Endpoint appears unauthenticated and exposes data")
+    if rate_limit_info.get("rate_limit_enforced") is False:
+        issues.append("No rate limits enforced")
     if missing_security_headers:
         issues.append(f"{len(missing_security_headers)} security headers are missing")
     if open_cors:
@@ -1209,6 +1248,7 @@ def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_cur
         issues.append(f"server technology is exposed via the Server header ({server_header_leak})")
     if discovered_endpoints:
         issues.append(f"{len(discovered_endpoints)} potentially sensitive endpoint(s) discovered")
+    
     if issues:
         summary = (
             f"Scan of {url} returned HTTP {status_code} in {response_time_ms}ms. "
@@ -1232,6 +1272,10 @@ def scan_external(req: ExternalScanRequest, current_user: dict = Depends(get_cur
         "open_cors": open_cors,
         "server_header_leak": server_header_leak,
         "discovered_endpoints": discovered_endpoints,
+        "secret_detected": secret_detected,
+        "secret_types": secrets,
+        "auth_exposed": auth_exposed,
+        "rate_limit_info": rate_limit_info,
         "overall_risk": overall_risk,
         "summary": summary,
     }
@@ -1468,39 +1512,24 @@ async def _gather_all_api_details():
     traffic = _get_effective_traffic(catalog)
     for api in catalog:
         api_id = api.get("id") or api.get("api_id")
-        detail = get_api_detail(api_id=api_id)
-        if not detail:
-            # DB catalog entry — build a minimal detail dict inline
-            ls = api.get("lazarus_status", "active")
-            status_map = {"zombie": "ZOMBIE", "shadow": "SHADOW", "stale": "STALE", "active": "ACTIVE"}
-            risk_map = {"zombie": "CRITICAL", "shadow": "CRITICAL", "stale": "MEDIUM", "active": "LOW"}
-            flow = next((f for f in traffic if f["path"] == api.get("path")), None)
-            detail = {
-                **api,
-                "id": api.get("api_id"),
-                "status": status_map.get(ls, "ACTIVE"),
-                "risk_level": risk_map.get(ls, "LOW"),
-                "traffic": flow,
-                "security_posture": {"overall_score": max(0, 100 - api.get("risk_score", 0)), "risk_level": risk_map.get(ls, "LOW")},
-                "classification": {"type": status_map.get(ls, "ACTIVE"), "label": f"{ls.capitalize()} API", "reasoning": [], "recommendations": []},
-                "is_in_catalog": api.get("is_documented", True),
-            }
-        all_details.append(detail)
+        detail = await _get_api_detail_full(api_id=api_id)
+        if detail:
+            all_details.append(detail)
     catalog_paths = {api.get("path") for api in catalog}
     for flow in traffic:
         if flow["path"] not in catalog_paths:
-            detail = get_api_detail(path=flow["path"])
+            detail = await _get_api_detail_full(path=flow["path"])
             if detail:
                 all_details.append(detail)
     return all_details
 
 
 @app.post("/api/ai/explain-risk")
-def ai_explain_risk(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
+async def ai_explain_risk(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """AI Risk Explanation — plain-English risk translation for non-technical users."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
-    detail = get_api_detail(api_id=req.api_id, path=req.path)
+    detail = await _get_api_detail_full(api_id=req.api_id, path=req.path)
     if not detail:
         raise HTTPException(status_code=404, detail="API not found.")
     result = ai_engine.explain_risk(detail)
@@ -1537,11 +1566,11 @@ async def ai_chat(req: AiChatRequest, current_user: dict = Depends(get_current_u
 
 
 @app.post("/api/ai/generate-report")
-def ai_generate_report(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
+async def ai_generate_report(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """AI Security Report Generator — comprehensive compliance report."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
-    detail = get_api_detail(api_id=req.api_id, path=req.path)
+    detail = await _get_api_detail_full(api_id=req.api_id, path=req.path)
     if not detail:
         raise HTTPException(status_code=404, detail="API not found.")
     result = ai_engine.generate_report(detail)
@@ -1549,11 +1578,11 @@ def ai_generate_report(req: AiApiRequest, current_user: dict = Depends(get_curre
 
 
 @app.post("/api/ai/attack-simulation")
-def ai_attack_simulation(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
+async def ai_attack_simulation(req: AiApiRequest, current_user: dict = Depends(get_current_user)):
     """Attack Scenario Simulator — hypothetical attack vectors."""
     if not req.api_id and not req.path:
         raise HTTPException(status_code=400, detail="Provide api_id or path.")
-    detail = get_api_detail(api_id=req.api_id, path=req.path)
+    detail = await _get_api_detail_full(api_id=req.api_id, path=req.path)
     if not detail:
         raise HTTPException(status_code=404, detail="API not found.")
     result = ai_engine.simulate_attack(detail)

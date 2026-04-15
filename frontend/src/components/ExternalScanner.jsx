@@ -376,6 +376,67 @@ export default function ExternalScanner() {
                 {/* Left column */}
                 <div className="detail-col-left">
 
+                  {/* Secrets Detected */}
+                  {result.secret_detected && (
+                    <div className="detail-card" style={{ borderLeft: '3px solid #dc2626', marginBottom: 20 }}>
+                      <div className="card-header">
+                        <div className="card-header-left">
+                          <AlertCircle className="w-5 h-5 text-red-600" />
+                          <h3 className="card-title">Secrets Exposed</h3>
+                        </div>
+                        <span className="risk-badge critical">CRITICAL</span>
+                      </div>
+                      <div style={{ padding: '12px 24px 20px' }}>
+                        <p style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: 10 }}>
+                          Sensitive tokens or credentials were found in the public response body:
+                        </p>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {result.secret_types.map(s => (
+                            <code key={s} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem', fontWeight: 600 }}>
+                              {s}
+                            </code>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Auth Exposure */}
+                  {result.auth_exposed && (
+                    <div className="detail-card" style={{ borderLeft: '3px solid #dc2626', marginBottom: 20 }}>
+                      <div className="card-header">
+                        <div className="card-header-left">
+                          <Unlock className="w-5 h-5 text-red-600" />
+                          <h3 className="card-title">Unauthenticated Data Exposure</h3>
+                        </div>
+                        <span className="risk-badge critical">CRITICAL</span>
+                      </div>
+                      <div style={{ padding: '12px 24px 20px' }}>
+                        <p style={{ fontSize: '0.875rem', color: '#64748b', lineHeight: 1.6 }}>
+                          This endpoint responds with HTTP 200 to requests lacking Authorization headers, and does not appear to be a login page. This may indicate an improperly secured API exposing sensitive data publicly.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Missing Rate Limits */}
+                  {result.rate_limit_info && result.rate_limit_info.rate_limit_enforced === false && (
+                    <div className="detail-card" style={{ borderLeft: '3px solid #ea580c', marginBottom: 20 }}>
+                      <div className="card-header">
+                        <div className="card-header-left">
+                          <Zap className="w-5 h-5 text-orange-500" />
+                          <h3 className="card-title">Missing Rate Limiting</h3>
+                        </div>
+                        <span className="risk-badge high">HIGH</span>
+                      </div>
+                      <div style={{ padding: '12px 24px 20px' }}>
+                        <p style={{ fontSize: '0.875rem', color: '#64748b', lineHeight: 1.6 }}>
+                          No HTTP 429 Too Many Requests response was observed after rapid sequential requests. The endpoint may be vulnerable to DoS attacks or automated scraping.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Missing Security Headers */}
                   <div className="detail-card">
                     <div className="card-header">
